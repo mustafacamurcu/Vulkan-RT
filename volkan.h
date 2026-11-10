@@ -55,6 +55,8 @@ public:
   float getTimestampPeriod() const;  // nanoseconds per timestamp tick
   std::string getDeviceName() const;
   std::string describeBufferMemory(const BufferData& bufferData, vk::MemoryPropertyFlags properties) const;
+  // Copies the storage image to the CPU (RGBA8, row by row), for correctness checks
+  std::vector<uint8_t> readStorageImage();
 
   // Accessors: callers can use these resources but not replace them
   const vk::raii::Device& device() const { return device_; }

@@ -7,15 +7,16 @@
 #include <glm/glm.hpp>
 
 #include "benchmark.h"
-#include "brute_force_material.h"
+#include "grid.h"
+#include "grid_material.h"
 #include "rt_material.h"
 #include "structs.h"
 #include "volkan.h"
 #include "window.h"
 
 enum class RenderMode {
-  HardwareRayTracing,  // BLAS/TLAS + ray tracing pipeline (driver builds a BVH)
-  BruteForceCompute    // compute shader, every pixel tests every cube
+  HardwareRayTracing,  // BLAS/TLAS + ray tracing pipeline (driver builds a BVH); no benchmark
+  GridCompute          // compute shader over a uniform grid; runs the benchmark suite
 };
 
 class Engine {
@@ -33,49 +34,69 @@ class Engine {
   // ---- Configuration (compile-time constants, one copy shared by all instances) ----
   static constexpr uint32_t WIDTH = 1920;
   static constexpr uint32_t HEIGHT = 1080;
-
-  static constexpr RenderMode RENDER_MODE = RenderMode::BruteForceCompute;
-
-  static constexpr const char* BENCHMARK_LABEL = "04-grid-dda";
-
-  // Cubes are stored in a GRID_RESOLUTION^3 grid that each ray walks with 3D-DDA.
-  // Kept at 16 (tuned for the previous step) so this step measures only the traversal.
-  static constexpr uint32_t GRID_RESOLUTION = 16;
+  static constexpr RenderMode RENDER_MODE = RenderMode::GridCompute;
+  static constexpr const char* BENCHMARK_LABEL = "05-views-and-grid-sweep";
 
   static constexpr uint32_t NUM_CUBES = 1000000;
-  // Brute force results with fewer cubes are scaled up to this count (lower bound)
-  static constexpr uint32_t PROJECTED_CUBE_COUNT = 1000000;
-
-  // TILE_SIZE > 0 renders the frame in TILE_SIZE x TILE_SIZE tiles, one submission
-  // each, for frames too slow for the ~2 s Windows GPU timeout (brute force took
-  // tens of seconds). 0 = one dispatch per frame. Tiled mode ignores input, so its
-  // images are deterministic: use it for pixel-exact correctness checks.
-  static constexpr uint32_t TILE_SIZE = 0;
-  static constexpr bool BRUTE_FORCE_TILED =
-      RENDER_MODE == RenderMode::BruteForceCompute && TILE_SIZE > 0;
-
-  // A tiled frame already averages over ~40 tiles, so one is enough (no warm-up)
-  static constexpr uint32_t BENCHMARK_WARMUP_FRAMES = BRUTE_FORCE_TILED ? 0 : 2;
-  static constexpr uint32_t BENCHMARK_TIMED_FRAMES = BRUTE_FORCE_TILED ? 1 : 30;
-
-  // The full scene: 1M cubes in a box of half extent 200. Smaller cube counts
-  // shrink the box so the cube density (and so the look of the scene) stays the same.
-  static constexpr float FULL_SCENE_HALF_EXTENT = 200.0f;
   inline static const glm::vec3 SCENE_CENTER{50.0f, 0.0f, 0.0f};
+
+  // Benchmark viewpoints. The cost of grid traversal depends on how far rays
+  // travel before hitting something, so it is measured in an easy, a medium
+  // and a hard case.
+  struct BenchmarkView {
+    const char* name;
+    float sceneHalfExtent;  // cubes fill a box of this half size around SCENE_CENTER
+    glm::vec3 cameraPos;
+    float yaw;    // degrees
+    float pitch;  // degrees
+  };
+  inline static const BenchmarkView VIEWS[] = {
+    // Camera inside the cloud: rays hit something within ~17 units
+    {"dense-inside", 200.0f, {50.0f, -70.0f, -80.0f}, 90.0f, 40.0f},
+    // Camera outside, the whole cloud in view: rays cross empty space, then hit its surface
+    {"dense-outside", 200.0f, {50.0f, 0.0f, -800.0f}, 90.0f, 0.0f},
+    // Same 1M cubes in a 125x larger volume: about half the rays escape without a hit
+    {"sparse-inside", 1000.0f, {50.0f, -70.0f, -80.0f}, 90.0f, 40.0f},
+  };
+
+  // Each method and the grid resolutions to sweep. Rejection tests every cell
+  // for every ray, so large grids get slow quickly; traversal can go much finer.
+  struct GridMethodConfig {
+    const char* name;
+    const char* shader;
+    GridLayout layout;
+    std::vector<uint32_t> resolutions;
+  };
+  inline static const GridMethodConfig METHODS[] = {
+    {"grid-rejection", "shaders/grid_rejection.spv", GridLayout::ByCenter, {8, 12, 16, 24, 32}},
+    {"grid-traversal", "shaders/grid_traversal.spv", GridLayout::ByOverlap,
+     {8, 16, 24, 32, 48, 64, 96, 128}},
+  };
+
+  // Per configuration: warm-up frames, then timed frames until either limit is reached
+  static constexpr uint32_t WARMUP_FRAMES = 2;
+  static constexpr uint32_t MIN_TIMED_FRAMES = 5;
+  static constexpr uint32_t MAX_TIMED_FRAMES = 30;
+  static constexpr double MAX_TIMED_GPU_MS = 3000.0;
+
+  // Inverse transform + sphere + id per grid entry; skip grids larger than this
+  static constexpr uint32_t BYTES_PER_ENTRY = sizeof(glm::mat4) + sizeof(glm::vec4) + sizeof(uint32_t);
+  static constexpr uint64_t MAX_GRID_BYTES = 1ull << 30;
 
  private:
   void createRayTracingResources();
-  void createBruteForceResources();
-  std::vector<glm::mat4> createRandomCubeTransforms(uint32_t count) const;
-  static float sceneHalfExtent();
+
+  void runBenchmarkSuite();
+  void setView(const BenchmarkView& view);
+  void loadGrid(const CubeScene& scene, const GridMethodConfig& method, uint32_t resolution,
+                BenchmarkInfo& info);
+  bool measureFrames(std::vector<FrameTiming>& timings);  // false if the window was closed
+  void discardPendingTimings();
 
   void drawFrame();
   void recordFrame(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex);
-  BruteForcePushConstants makeBruteForcePushConstants() const;
-  bool renderTiledFrame(FrameTiming& timing);
-  void runTiledBenchmark();
+  GridPushConstants makeGridPushConstants() const;
   void collectFrameTiming(uint32_t frameIndex);
-  void finishBenchmark();
 
   void updateCameraFront();
   void processInput();
@@ -101,24 +122,25 @@ class Engine {
   BufferData tlasBuffer_;
   vk::raii::AccelerationStructureKHR tlas_ = nullptr;
 
-  // Brute force geometry
-  // One entry per (cube, overlapped cell) pair, sorted by cell
+  // The grid currently on the GPU: one entry per (cube, cell) pair, sorted by cell
   BufferData cubeBuffer_;    // inverse transform (64 B)
   BufferData sphereBuffer_;  // bounding sphere (16 B)
-  BufferData cellBuffer_;    // where each cell's entries start (GRID_RESOLUTION^3 + 1)
+  BufferData cellBuffer_;    // where each cell's entries start (resolution^3 + 1)
   BufferData cubeIdBuffer_;  // original cube index (4 B), for its color
   glm::vec4 gridMin_{0.0f};  // xyz = grid's min corner, w = cell size
+  float gridPad_ = 0.0f;     // how much to grow each cell when testing it (rejection only)
+  uint32_t gridResolution_ = 0;
 
   // Benchmarking: a pair of GPU timestamps per frame in flight
   vk::raii::QueryPool timestampQueryPool_ = nullptr;
   bool timestampsPending_[MAX_FRAMES_IN_FLIGHT] = {};
   double frameIntervalMs_[MAX_FRAMES_IN_FLIGHT] = {};
   std::chrono::steady_clock::time_point lastSubmitTime_;
-  uint32_t framesMeasured_ = 0;
-  std::vector<FrameTiming> frameTimings_;
-  BenchmarkInfo benchmarkInfo_;
+  bool collecting_ = false;
+  uint32_t framesSeen_ = 0;
+  std::vector<FrameTiming> collected_;
   bool benchmarkDone_ = false;
 
   std::unique_ptr<RayTracingMaterial> rtMaterial_;
-  std::unique_ptr<BruteForceMaterial> bruteForceMaterial_;
+  std::unique_ptr<GridMaterial> gridMaterial_;
 };

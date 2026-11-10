@@ -1,7 +1,8 @@
-#include "brute_force_material.h"
+#include "grid_material.h"
 #include "volkan.h"
 
-BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& cubeBuffer,
+GridMaterial::GridMaterial(const Volkan& volkan, const std::string& shaderPath,
+                           const BufferData& cubeBuffer,
                                        const BufferData& sphereBuffer,
                                        const BufferData& cellBuffer,
                                        const BufferData& cubeIdBuffer,
@@ -42,7 +43,7 @@ BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& c
 
   // Create pipeline layout
   vk::PushConstantRange pushConstantRange(vk::ShaderStageFlagBits::eCompute, 0,
-                                          sizeof(BruteForcePushConstants));
+                                          sizeof(GridPushConstants));
 
   vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
   pipelineLayoutInfo.setSetLayouts(*descriptorSetLayout);
@@ -50,7 +51,7 @@ BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& c
   pipelineLayout = volkan.createPipelineLayout(pipelineLayoutInfo);
 
   // Create compute pipeline
-  vk::raii::ShaderModule computeShader = volkan.createShaderModule("shaders/brute_force.spv");
+  vk::raii::ShaderModule computeShader = volkan.createShaderModule(shaderPath);
 
   vk::ComputePipelineCreateInfo pipelineInfo;
   pipelineInfo.setStage({{}, vk::ShaderStageFlagBits::eCompute, *computeShader, "main"});
@@ -59,13 +60,13 @@ BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& c
   pipeline = volkan.createComputePipeline(pipelineInfo);
 }
 
-void BruteForceMaterial::dispatch(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
-                                  const BruteForcePushConstants& pushConstants,
+void GridMaterial::dispatch(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
+                            const GridPushConstants& pushConstants,
                                   vk::Extent2D region) const {
   commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
   commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout, 0,
                                    *descriptorSets[frameIndex], {});
-  commandBuffer.pushConstants<BruteForcePushConstants>(
+  commandBuffer.pushConstants<GridPushConstants>(
       *pipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, pushConstants);
 
   // Round up so partial workgroups cover the image edges (the shader bounds-checks)
@@ -74,7 +75,7 @@ void BruteForceMaterial::dispatch(vk::raii::CommandBuffer& commandBuffer, uint32
   commandBuffer.dispatch(groupsX, groupsY, 1);
 }
 
-void BruteForceMaterial::updateStorageImage(const Volkan& volkan,
+void GridMaterial::updateStorageImage(const Volkan& volkan,
                                             const vk::raii::ImageView& storageImageView) {
   for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     vk::DescriptorImageInfo imageInfo;

@@ -52,3 +52,25 @@ Instead of testing all 4,096 cells, each ray walks only the cells it crosses, ne
 | Grid Traversal | 1,000,000 | 10.7 ms |
 
 1 million cubes now render at 93 FPS.
+
+## Benchmark Views and Grid Size
+The camera starts inside the cloud, where every ray hits something within ~17 units, so only ~0.1% of the cubes are ever visible. That is the easy case for grid traversal. From here on every step is measured in three views:
+
+- **dense-inside**: the original view, camera inside the cloud.
+- **dense-outside**: the same cubes, camera 800 units back with the whole cloud in view.
+- **sparse-inside**: the same 1M cubes in a 125x larger volume; about half the rays escape without a hit (the hard case).
+
+Grid traversal, median GPU time per frame at each grid size:
+
+| Grid size | dense-inside | dense-outside | sparse-inside |
+| --- | --- | --- | --- |
+| 8 | 44.6 ms | 14.8 ms | 188.8 ms |
+| 16 | 9.75 ms | 4.22 ms | 41.9 ms |
+| 24 | 4.28 ms | 2.48 ms | 19.1 ms |
+| 32 | 2.67 ms | 1.44 ms | 13.1 ms |
+| 48 | 1.39 ms | 1.05 ms | 7.03 ms |
+| 64 | 1.16 ms | 1.06 ms | 5.44 ms |
+| 96 | 1.33 ms | 1.86 ms | 4.53 ms |
+| 128 | 1.98 ms | 1.50 ms | 4.60 ms |
+
+64 is within ~20% of the best in every view. Dense views get slower beyond it because smaller cells mean more duplicate entries and more steps per ray; the sparse view keeps improving up to 96 because its rays travel far. Grid rejection is best at 12-16 in every view (91-255 ms), 100-200x slower than traversal.

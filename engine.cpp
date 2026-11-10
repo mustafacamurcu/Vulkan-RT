@@ -1,15 +1,13 @@
 #include "engine.h"
 
 #include <algorithm>
-#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
-#include <random>
+#include <sstream>
 #include <string>
-
-#include <glm/gtc/constants.hpp>
 
 namespace {
 
@@ -36,20 +34,12 @@ Engine::Engine() : window_(WIDTH, HEIGHT, "Vulkan") {
   glfwSetFramebufferSizeCallback(window_.handle(), framebufferResizeCallback);
 
   volkan_.init(window_.handle());
-  updateCameraFront();
+  setView(VIEWS[0]);
+  timestampQueryPool_ = volkan_.createTimestampQueryPool(2 * MAX_FRAMES_IN_FLIGHT);
 
   if (RENDER_MODE == RenderMode::HardwareRayTracing) {
     createRayTracingResources();
-  } else {
-    createBruteForceResources();
   }
-
-  timestampQueryPool_ = volkan_.createTimestampQueryPool(2 * MAX_FRAMES_IN_FLIGHT);
-  benchmarkInfo_.label = BENCHMARK_LABEL;
-  benchmarkInfo_.buildConfig = BUILD_CONFIG;
-  benchmarkInfo_.deviceName = volkan_.getDeviceName();
-  benchmarkInfo_.cubeCount = NUM_CUBES;
-  benchmarkInfo_.projectedCubeCount = PROJECTED_CUBE_COUNT;
 }
 
 Engine::~Engine() {
@@ -59,9 +49,7 @@ Engine::~Engine() {
 }
 
 void Engine::createRayTracingResources() {
-  auto start = Clock::now();
-  std::vector<glm::mat4> transforms = createRandomCubeTransforms(NUM_CUBES);
-  benchmarkInfo_.sceneGenMs = msSince(start);
+  CubeScene scene = createCubeScene(NUM_CUBES, SCENE_CENTER, VIEWS[0].sceneHalfExtent);
 
   // Unit cube centered at the origin
   std::vector<Vertex> vertices = {
@@ -79,129 +67,184 @@ void Engine::createRayTracingResources() {
     3, 7, 6, 3, 6, 2   // +Y
   };
 
-  start = Clock::now();
   vk::BufferUsageFlags geometryUsage =
     vk::BufferUsageFlagBits::eShaderDeviceAddress |
     vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
-  vk::MemoryPropertyFlags hostMemory =
-    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+  cubeVertexBuffer_ = volkan_.createDeviceLocalBuffer(
+    vertices.data(), sizeof(Vertex) * vertices.size(), geometryUsage);
+  cubeIndexBuffer_ = volkan_.createDeviceLocalBuffer(
+    indices.data(), sizeof(uint32_t) * indices.size(), geometryUsage);
 
-  vk::DeviceSize vertexBufferSize = sizeof(Vertex) * vertices.size();
-  cubeVertexBuffer_ = volkan_.createBuffer(
-    vertexBufferSize, geometryUsage | vk::BufferUsageFlagBits::eVertexBuffer, hostMemory);
-
-  void* data = cubeVertexBuffer_.memory.mapMemory(0, vertexBufferSize);
-  std::memcpy(data, vertices.data(), vertexBufferSize);
-  cubeVertexBuffer_.memory.unmapMemory();
-
-  vk::DeviceSize indexBufferSize = sizeof(uint32_t) * indices.size();
-  cubeIndexBuffer_ = volkan_.createBuffer(
-    indexBufferSize, geometryUsage | vk::BufferUsageFlagBits::eIndexBuffer, hostMemory);
-
-  data = cubeIndexBuffer_.memory.mapMemory(0, indexBufferSize);
-  std::memcpy(data, indices.data(), indexBufferSize);
-  cubeIndexBuffer_.memory.unmapMemory();
-  benchmarkInfo_.uploadMs = msSince(start);
-
-  // Build the acceleration structures: one cube BLAS shared by every TLAS instance
-  start = Clock::now();
+  // One cube BLAS shared by every TLAS instance
   blas_ = volkan_.createBLAS(blasBuffer_,
                              volkan_.getBufferAddress(cubeVertexBuffer_),
                              static_cast<uint32_t>(vertices.size()),
                              volkan_.getBufferAddress(cubeIndexBuffer_),
                              static_cast<uint32_t>(indices.size()));
-  tlas_ = volkan_.createTLAS(tlasBuffer_, blas_, transforms);
-  benchmarkInfo_.cubePrepMs = msSince(start);
+  tlas_ = volkan_.createTLAS(tlasBuffer_, blas_, scene.transforms);
 
-  start = Clock::now();
   rtMaterial_ = std::make_unique<RayTracingMaterial>(volkan_, tlas_, volkan_.storageImageView());
-  benchmarkInfo_.pipelineMs = msSince(start);
-
-  benchmarkInfo_.renderer = "hardware-rt";
-  benchmarkInfo_.linearInCubeCount = false;  // BVH traversal is not linear in cube count
 }
 
-void Engine::createBruteForceResources() {
-  auto start = Clock::now();
-  std::vector<glm::mat4> transforms = createRandomCubeTransforms(NUM_CUBES);
-  benchmarkInfo_.sceneGenMs = msSince(start);
+// ---------------------------------------------------------------------------
+// Benchmark suite: every view x method x grid resolution
+// ---------------------------------------------------------------------------
 
-  // The shader needs world -> cube space, so store the inverse of every transform
-  start = Clock::now();
-  std::vector<glm::mat4> invTransforms(transforms.size());
-  for (size_t i = 0; i < transforms.size(); i++) {
-    invTransforms[i] = glm::inverse(transforms[i]);
-  }
-
-  // Bounding sphere of each cube, for the cheap rejection test. The unit cube's
-  // corners are sqrt(3)/2 from its center, scaled by the cube's (uniform) scale.
-  // The corners sit exactly on that sphere, so a 0.1% larger radius is a safety
-  // margin against float rounding rejecting a ray that grazes a corner.
-  constexpr float RADIUS_PADDING = 1.001f;
-  std::vector<glm::vec4> spheres(transforms.size());
-  for (size_t i = 0; i < transforms.size(); i++) {
-    glm::vec3 center = glm::vec3(transforms[i][3]);
-    float scale = glm::length(glm::vec3(transforms[i][0]));
-    spheres[i] = glm::vec4(center, scale * 0.5f * std::sqrt(3.0f) * RADIUS_PADDING);
-  }
-  // Uniform grid for 3D-DDA traversal. The ray only visits cells it actually
-  // crosses, so every cube must be listed in EVERY cell its bounding box
-  // overlaps (a cube centered in a cell the ray skips can still stick into one
-  // it visits). Cells are cubic and span the bounding boxes of all cubes.
-  glm::vec3 gridLo(FLT_MAX);
-  glm::vec3 gridHi(-FLT_MAX);
-  for (const glm::vec4& sphere : spheres) {
-    gridLo = glm::min(gridLo, glm::vec3(sphere) - sphere.w);
-    gridHi = glm::max(gridHi, glm::vec3(sphere) + sphere.w);
-  }
-  glm::vec3 gridExtent = gridHi - gridLo;
-  // Tiny margin so boxes touching the max corner still land inside the last cell
-  float cellSize = std::max({gridExtent.x, gridExtent.y, gridExtent.z}) / GRID_RESOLUTION * 1.0001f;
-  gridMin_ = glm::vec4(gridLo, cellSize);
-
-  const uint32_t N = GRID_RESOLUTION;
-  auto cellCoord = [&](const glm::vec3& point) {
-    return glm::min(glm::uvec3((point - gridLo) / cellSize), glm::uvec3(N - 1));
+void Engine::runBenchmarkSuite() {
+  struct Result {
+    const char* view;
+    const char* method;
+    uint32_t resolution;
+    FrameStats stats;
   };
-  // Calls visit(cellIndex) for every cell the sphere's bounding box overlaps
-  auto forEachOverlappedCell = [&](const glm::vec4& sphere, auto&& visit) {
-    glm::uvec3 lo = cellCoord(glm::vec3(sphere) - sphere.w);
-    glm::uvec3 hi = cellCoord(glm::vec3(sphere) + sphere.w);
-    for (uint32_t z = lo.z; z <= hi.z; z++) {
-      for (uint32_t y = lo.y; y <= hi.y; y++) {
-        for (uint32_t x = lo.x; x <= hi.x; x++) {
-          visit(x + N * (y + N * z));
+  std::vector<Result> results;
+  ImageDiff largestDiff;
+
+  std::cout << "Benchmark suite: " << std::size(VIEWS) << " views, " << NUM_CUBES << " cubes, "
+            << volkan_.extent().width << "x" << volkan_.extent().height << "\n"
+            << std::left << std::setw(15) << "view" << std::setw(16) << "method" << std::right
+            << std::setw(5) << "N" << std::setw(12) << "entries" << std::setw(11) << "median ms"
+            << std::setw(10) << "stddev" << std::setw(8) << "frames"
+            << "  image vs first config of the view" << std::endl;
+
+  CubeScene scene;
+  float sceneHalfExtent = -1.0f;
+  double sceneGenMs = 0.0;
+
+  for (const BenchmarkView& view : VIEWS) {
+    if (view.sceneHalfExtent != sceneHalfExtent) {
+      auto start = Clock::now();
+      scene = createCubeScene(NUM_CUBES, SCENE_CENTER, view.sceneHalfExtent);
+      sceneGenMs = msSince(start);
+      sceneHalfExtent = view.sceneHalfExtent;
+    }
+    setView(view);
+    std::vector<uint8_t> referenceImage;
+
+    for (const GridMethodConfig& method : METHODS) {
+      for (uint32_t resolution : method.resolutions) {
+        uint64_t entries = countGridEntries(scene, method.layout, resolution);
+        if (entries * BYTES_PER_ENTRY > MAX_GRID_BYTES) {
+          std::cout << std::left << std::setw(15) << view.name << std::setw(16) << method.name
+                    << std::right << std::setw(5) << resolution << std::setw(12) << entries
+                    << "  skipped: grid would need " << entries * BYTES_PER_ENTRY / (1 << 20)
+                    << " MiB" << std::endl;
+          continue;
+        }
+        window_.setTitle(std::string("Vulkan - ") + view.name + ", " + method.name + ", N=" +
+                         std::to_string(resolution));
+
+        BenchmarkInfo info;
+        info.label = BENCHMARK_LABEL;
+        info.renderer = method.name;
+        info.view = view.name;
+        info.buildConfig = BUILD_CONFIG;
+        info.deviceName = volkan_.getDeviceName();
+        info.width = volkan_.extent().width;
+        info.height = volkan_.extent().height;
+        info.cubeCount = NUM_CUBES;
+        info.bytesPerEntry = BYTES_PER_ENTRY;
+        info.sceneGenMs = sceneGenMs;
+        loadGrid(scene, method, resolution, info);
+
+        std::vector<FrameTiming> timings;
+        if (!measureFrames(timings)) {
+          std::cout << "Window closed, benchmark aborted." << std::endl;
+          return;
+        }
+
+        // Every configuration of a view should render the same image. Count the
+        // pixels that differ from the view's first configuration, and how many of
+        // them gained or lost a hit (black <-> cube), which is what a bug would do.
+        std::vector<uint8_t> image = volkan_.readStorageImage();
+        info.imageHash = hashBytes(image);
+        if (referenceImage.empty()) {
+          referenceImage = image;
+        }
+        ImageDiff diff = compareImages(referenceImage, image);
+        if (diff.differentPixels > largestDiff.differentPixels) {
+          largestDiff = diff;
+        }
+
+        FrameStats stats = computeStats(timings);
+        appendBenchmarkCsv(BENCHMARK_CSV_PATH, info, stats);
+        results.push_back({view.name, method.name, resolution, stats});
+
+        std::cout << std::left << std::setw(15) << view.name << std::setw(16) << method.name
+                  << std::right << std::setw(5) << resolution << std::setw(12) << entries
+                  << std::fixed << std::setprecision(2) << std::setw(11) << stats.medianGpuMs
+                  << std::setw(10) << stats.stddevGpuMs << std::setw(8) << stats.frames << "  ";
+        if (diff.differentPixels == 0) {
+          std::cout << "identical" << std::endl;
+        } else {
+          std::cout << diff.differentPixels << " px differ (" << diff.hitChangedPixels
+                    << " gained/lost a hit)" << std::endl;
         }
       }
     }
-  };
+  }
 
-  // Counting sort by cell: count entries per cell, prefix-sum into start offsets,
-  // then copy each cube into every cell it overlaps.
-  std::vector<uint32_t> cellStart(N * N * N + 1, 0);
-  for (const glm::vec4& sphere : spheres) {
-    forEachOverlappedCell(sphere, [&](uint32_t cell) { cellStart[cell + 1]++; });
+  // Best resolution per view and method
+  std::cout << "\nFastest grid resolution (median GPU ms per frame):\n";
+  for (const BenchmarkView& view : VIEWS) {
+    for (const GridMethodConfig& method : METHODS) {
+      const Result* best = nullptr;
+      for (const Result& result : results) {
+        if (result.view == view.name && result.method == method.name &&
+            (!best || result.stats.medianGpuMs < best->stats.medianGpuMs)) {
+          best = &result;
+        }
+      }
+      if (best) {
+        std::cout << "  " << std::left << std::setw(15) << view.name << std::setw(16) << method.name
+                  << std::right << "N=" << std::setw(3) << best->resolution << std::fixed
+                  << std::setprecision(2) << std::setw(10) << best->stats.medianGpuMs << " ms\n";
+      }
+    }
   }
-  for (size_t c = 1; c < cellStart.size(); c++) {
-    cellStart[c] += cellStart[c - 1];
+  uint64_t pixelCount = uint64_t(volkan_.extent().width) * volkan_.extent().height;
+  std::cout << "Largest image difference within a view: " << largestDiff.differentPixels << " of "
+            << pixelCount << " px (" << std::setprecision(3)
+            << 100.0 * largestDiff.differentPixels / pixelCount << "%), "
+            << largestDiff.hitChangedPixels << " gained/lost a hit\n"
+            << "Results appended to " << BENCHMARK_CSV_PATH << std::endl;
+
+  // Leave the fastest traversal grid for the first view loaded, for interactive use
+  const Result* best = nullptr;
+  for (const Result& result : results) {
+    if (result.view == VIEWS[0].name && result.method == METHODS[1].name &&
+        (!best || result.stats.medianGpuMs < best->stats.medianGpuMs)) {
+      best = &result;
+    }
   }
-  uint32_t entryCount = cellStart.back();
-  std::vector<uint32_t> nextSlot(cellStart.begin(), cellStart.end() - 1);
-  std::vector<glm::mat4> sortedInvTransforms(entryCount);
-  std::vector<glm::vec4> sortedSpheres(entryCount);
-  std::vector<uint32_t> cubeIds(entryCount);
-  for (uint32_t i = 0; i < spheres.size(); i++) {
-    forEachOverlappedCell(spheres[i], [&](uint32_t cell) {
-      uint32_t slot = nextSlot[cell]++;
-      sortedInvTransforms[slot] = invTransforms[i];
-      sortedSpheres[slot] = spheres[i];
-      cubeIds[slot] = i;
-    });
+  if (best) {
+    CubeScene firstScene = createCubeScene(NUM_CUBES, SCENE_CENTER, VIEWS[0].sceneHalfExtent);
+    BenchmarkInfo unused;
+    setView(VIEWS[0]);
+    loadGrid(firstScene, METHODS[1], best->resolution, unused);
   }
-  std::cout << "Grid: " << N << "^3 cells, " << entryCount << " entries for "
-            << spheres.size() << " cubes (" << 100.0 * (entryCount - spheres.size()) / spheres.size()
-            << "% duplicates)" << std::endl;
-  benchmarkInfo_.cubePrepMs = msSince(start);
+  window_.setTitle("Vulkan - benchmark done (WASD to move)");
+}
+
+void Engine::setView(const BenchmarkView& view) {
+  camera_.pos = view.cameraPos;
+  yaw_ = view.yaw;
+  pitch_ = view.pitch;
+  updateCameraFront();
+}
+
+void Engine::loadGrid(const CubeScene& scene, const GridMethodConfig& method, uint32_t resolution,
+                      BenchmarkInfo& info) {
+  // The old grid may still be in use by frames in flight
+  volkan_.device().waitIdle();
+  discardPendingTimings();
+  gridMaterial_.reset();
+
+  auto start = Clock::now();
+  GridData grid = buildGrid(scene, method.layout, resolution);
+  info.gridBuildMs = msSince(start);
+  info.gridResolution = resolution;
+  info.gridEntries = grid.cubeIds.size();
 
   // Upload once through staging buffers, so the shader reads from VRAM
   start = Clock::now();
@@ -209,77 +252,74 @@ void Engine::createBruteForceResources() {
     return volkan_.createDeviceLocalBuffer(values.data(), sizeof(values[0]) * values.size(),
                                            vk::BufferUsageFlagBits::eStorageBuffer);
   };
-  cubeBuffer_ = upload(sortedInvTransforms);
-  sphereBuffer_ = upload(sortedSpheres);
-  cellBuffer_ = upload(cellStart);
-  cubeIdBuffer_ = upload(cubeIds);
-  benchmarkInfo_.uploadMs = msSince(start);
+  cubeBuffer_ = upload(grid.invTransforms);
+  sphereBuffer_ = upload(grid.spheres);
+  cellBuffer_ = upload(grid.cellStart);
+  cubeIdBuffer_ = upload(grid.cubeIds);
+  info.uploadMs = msSince(start);
 
   start = Clock::now();
-  bruteForceMaterial_ = std::make_unique<BruteForceMaterial>(
-      volkan_, cubeBuffer_, sphereBuffer_, cellBuffer_, cubeIdBuffer_,
-      volkan_.storageImageView());
-  benchmarkInfo_.pipelineMs = msSince(start);
+  gridMaterial_ = std::make_unique<GridMaterial>(volkan_, method.shader, cubeBuffer_, sphereBuffer_,
+                                                 cellBuffer_, cubeIdBuffer_,
+                                                 volkan_.storageImageView());
+  info.pipelineMs = msSince(start);
 
-  benchmarkInfo_.renderer = BRUTE_FORCE_TILED ? "grid-dda-compute-tiled" : "grid-dda-compute";
-  benchmarkInfo_.tileSize = BRUTE_FORCE_TILED ? TILE_SIZE : 0;
-  benchmarkInfo_.linearInCubeCount = false;  // the grid skips most cubes
-  benchmarkInfo_.bytesPerCube = sizeof(glm::mat4) + sizeof(glm::vec4) + sizeof(uint32_t);
-  benchmarkInfo_.cubeMemory =
-      volkan_.describeBufferMemory(cubeBuffer_, vk::MemoryPropertyFlagBits::eDeviceLocal);
-  benchmarkInfo_.workgroupSize = BruteForceMaterial::WORKGROUP_SIZE;
+  gridMin_ = grid.gridMin;
+  gridPad_ = grid.pad;
+  gridResolution_ = resolution;
 }
 
-float Engine::sceneHalfExtent() {
-  // Volume scales with the cube count, so the side length scales with its cube root
-  return FULL_SCENE_HALF_EXTENT *
-         std::cbrt(static_cast<float>(NUM_CUBES) / static_cast<float>(PROJECTED_CUBE_COUNT));
-}
+bool Engine::measureFrames(std::vector<FrameTiming>& timings) {
+  collected_.clear();
+  framesSeen_ = 0;
+  collecting_ = true;
+  lastSubmitTime_ = Clock::now();
 
-std::vector<glm::mat4> Engine::createRandomCubeTransforms(uint32_t count) const {
-  // Fixed seed so the scene is the same every run
-  std::mt19937 rng(1337);
-  float halfExtent = sceneHalfExtent();
-  std::uniform_real_distribution<float> positionDist(-halfExtent, halfExtent);
-  std::uniform_real_distribution<float> angleDist(0.0f, glm::two_pi<float>());
-  std::uniform_real_distribution<float> axisDist(-1.0f, 1.0f);
-  std::uniform_real_distribution<float> scaleDist(0.5f, 3.0f);
-
-  std::vector<glm::mat4> transforms;
-  transforms.reserve(count);
-  for (uint32_t i = 0; i < count; i++) {
-    glm::vec3 position = SCENE_CENTER +
-        glm::vec3(positionDist(rng), positionDist(rng), positionDist(rng));
-
-    glm::vec3 axis(axisDist(rng), axisDist(rng), axisDist(rng));
-    if (glm::length(axis) < 0.001f) {
-      axis = glm::vec3(0.0f, 1.0f, 0.0f);
+  while (true) {
+    glfwPollEvents();
+    if (window_.shouldClose()) {
+      collecting_ = false;
+      return false;
     }
+    drawFrame();
 
-    glm::mat4 transform = glm::translate(glm::mat4(1.0f), position);
-    transform = glm::rotate(transform, angleDist(rng), glm::normalize(axis));
-    transform = glm::scale(transform, glm::vec3(scaleDist(rng)));
-    transforms.push_back(transform);
+    double totalGpuMs = 0.0;
+    for (const FrameTiming& timing : collected_) {
+      totalGpuMs += timing.gpuMs;
+    }
+    if (collected_.size() >= MAX_TIMED_FRAMES ||
+        (collected_.size() >= MIN_TIMED_FRAMES && totalGpuMs >= MAX_TIMED_GPU_MS)) {
+      break;
+    }
   }
-  return transforms;
+
+  collecting_ = false;
+  volkan_.device().waitIdle();
+  discardPendingTimings();
+  timings = collected_;
+  return true;
 }
+
+void Engine::discardPendingTimings() {
+  for (bool& pending : timestampsPending_) {
+    pending = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Frame loop
+// ---------------------------------------------------------------------------
 
 void Engine::run() {
-  std::cout << "Benchmarking " << BENCHMARK_WARMUP_FRAMES << " warm-up + "
-            << BENCHMARK_TIMED_FRAMES << " timed frames..." << std::endl;
-  if (BRUTE_FORCE_TILED) {
-    // Renders the frames up front, reports, then keeps showing the last image
-    runTiledBenchmark();
+  if (RENDER_MODE == RenderMode::GridCompute) {
+    runBenchmarkSuite();
   }
+  benchmarkDone_ = true;
   lastSubmitTime_ = Clock::now();
 
   while (!window_.shouldClose()) {
     glfwPollEvents();
-    // Keep the camera still while benchmarking so every frame renders the same thing.
-    // Tiled frames take seconds each, so the camera stays put in that mode.
-    if (benchmarkDone_ && !BRUTE_FORCE_TILED) {
-      processInput();
-    }
+    processInput();
     drawFrame();
   }
 }
@@ -290,23 +330,10 @@ void Engine::drawFrame() {
       if (rtMaterial_) {
         rtMaterial_->updateStorageImage(volkan_, volkan_.storageImageView());
       }
-      if (bruteForceMaterial_) {
-        bruteForceMaterial_->updateStorageImage(volkan_, volkan_.storageImageView());
-      }
-      if (BRUTE_FORCE_TILED && benchmarkDone_) {
-        // The storage image was recreated empty, so render it again (slow!)
-        FrameTiming timing;
-        renderTiledFrame(timing);
+      if (gridMaterial_) {
+        gridMaterial_->updateStorageImage(volkan_, volkan_.storageImageView());
       }
     }
-    return;
-  }
-
-  if (BRUTE_FORCE_TILED) {
-    // The image was rendered tile by tile outside the frame loop; only present it
-    volkan_.beginCommandBuffer();
-    volkan_.copyStorageImageToSwapchain();
-    volkan_.submit();
     return;
   }
 
@@ -339,105 +366,33 @@ void Engine::recordFrame(vk::raii::CommandBuffer& commandBuffer, uint32_t frameI
                                firstQuery);
 
   vk::Extent2D extent = volkan_.extent();
-  if (RENDER_MODE == RenderMode::HardwareRayTracing) {
+  if (rtMaterial_) {
     rtMaterial_->traceRays(commandBuffer, frameIndex, extent, volkan_, camera_);
-  } else {
-    bruteForceMaterial_->dispatch(commandBuffer, frameIndex, makeBruteForcePushConstants(),
-                                  extent);
+  } else if (gridMaterial_) {
+    gridMaterial_->dispatch(commandBuffer, frameIndex, makeGridPushConstants(), extent);
   }
 
   commandBuffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *timestampQueryPool_,
                                firstQuery + 1);
 }
 
-BruteForcePushConstants Engine::makeBruteForcePushConstants() const {
+GridPushConstants Engine::makeGridPushConstants() const {
   vk::Extent2D extent = volkan_.extent();
   glm::mat4 viewProj = camera_.getProjectionMatrix(extent.width / static_cast<float>(extent.height)) *
                        camera_.getViewMatrix();
 
-  BruteForcePushConstants pushConstants;
+  GridPushConstants pushConstants;
   pushConstants.invViewProj = glm::inverse(viewProj);
   pushConstants.cameraPos = glm::vec4(camera_.pos, 1.0f);
-  pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, GRID_RESOLUTION);  // tile offset starts at 0
+  pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, gridResolution_);
   pushConstants.gridMin = gridMin_;
+  pushConstants.gridPad = glm::vec4(gridPad_, 0.0f, 0.0f, 0.0f);
   return pushConstants;
-}
-
-bool Engine::renderTiledFrame(FrameTiming& timing) {
-  vk::Extent2D extent = volkan_.extent();
-  BruteForcePushConstants pushConstants = makeBruteForcePushConstants();
-  float timestampPeriod = volkan_.getTimestampPeriod();
-  uint32_t tilesX = (extent.width + TILE_SIZE - 1) / TILE_SIZE;
-  uint32_t tilesY = (extent.height + TILE_SIZE - 1) / TILE_SIZE;
-
-  timing = FrameTiming();
-  double slowestTileMs = 0.0;
-  auto frameStart = Clock::now();
-
-  for (uint32_t tileY = 0; tileY < tilesY; tileY++) {
-    for (uint32_t tileX = 0; tileX < tilesX; tileX++) {
-      uint32_t offsetX = tileX * TILE_SIZE;
-      uint32_t offsetY = tileY * TILE_SIZE;
-      pushConstants.params.y = offsetX;
-      pushConstants.params.z = offsetY;
-      vk::Extent2D region{std::min(TILE_SIZE, extent.width - offsetX),
-                          std::min(TILE_SIZE, extent.height - offsetY)};
-
-      // Each tile is its own submission, timed with its own pair of timestamps
-      vk::raii::CommandBuffer cmdBuffer = volkan_.beginSingleTimeCommands();
-      cmdBuffer.resetQueryPool(*timestampQueryPool_, 0, 2);
-      cmdBuffer.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands, *timestampQueryPool_, 0);
-      bruteForceMaterial_->dispatch(cmdBuffer, 0, pushConstants, region);
-      cmdBuffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *timestampQueryPool_, 1);
-      volkan_.endSingleTimeCommands(cmdBuffer);
-
-      auto [result, timestamps] = timestampQueryPool_.getResults<uint64_t>(
-          0, 2, 2 * sizeof(uint64_t), sizeof(uint64_t),
-          vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
-      double tileMs = (timestamps[1] - timestamps[0]) * timestampPeriod / 1e6;
-      timing.gpuMs += tileMs;
-      slowestTileMs = std::max(slowestTileMs, tileMs);
-
-      // Keep the window responsive during a multi-second frame
-      glfwPollEvents();
-      if (window_.shouldClose()) {
-        return false;
-      }
-      uint32_t tileIndex = tileY * tilesX + tileX + 1;
-      window_.setTitle("Vulkan - tile " + std::to_string(tileIndex) + "/" +
-                       std::to_string(tilesX * tilesY));
-    }
-  }
-
-  timing.frameIntervalMs = msSince(frameStart);
-  std::cout << "  GPU " << timing.gpuMs << " ms, slowest tile " << slowestTileMs
-            << " ms (Windows GPU timeout ~2000 ms)" << std::endl;
-  return true;
-}
-
-void Engine::runTiledBenchmark() {
-  uint32_t totalFrames = BENCHMARK_WARMUP_FRAMES + BENCHMARK_TIMED_FRAMES;
-  for (uint32_t i = 0; i < totalFrames; i++) {
-    bool warmup = i < BENCHMARK_WARMUP_FRAMES;
-    std::cout << (warmup ? "Warm-up frame " : "Timed frame ") << i + 1 << "/" << totalFrames
-              << ":" << std::endl;
-
-    FrameTiming timing;
-    if (!renderTiledFrame(timing)) {
-      std::cout << "Window closed, benchmark aborted." << std::endl;
-      return;
-    }
-    drawFrame();  // show the result
-    if (!warmup) {
-      frameTimings_.push_back(timing);
-    }
-  }
-  finishBenchmark();
 }
 
 void Engine::collectFrameTiming(uint32_t frameIndex) {
   timestampsPending_[frameIndex] = false;
-  if (benchmarkDone_) {
+  if (!collecting_) {
     return;
   }
 
@@ -445,34 +400,19 @@ void Engine::collectFrameTiming(uint32_t frameIndex) {
       2 * frameIndex, 2, 2 * sizeof(uint64_t), sizeof(uint64_t),
       vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
 
+  framesSeen_++;
+  if (framesSeen_ <= WARMUP_FRAMES) {
+    return;
+  }
   FrameTiming timing;
   timing.gpuMs = (timestamps[1] - timestamps[0]) * volkan_.getTimestampPeriod() / 1e6;
   timing.frameIntervalMs = frameIntervalMs_[frameIndex];
-
-  framesMeasured_++;
-  bool warmup = framesMeasured_ <= BENCHMARK_WARMUP_FRAMES;
-  std::cout << (warmup ? "  warm-up " : "  frame   ") << framesMeasured_ << ": GPU "
-            << timing.gpuMs << " ms" << std::endl;
-  if (!warmup) {
-    frameTimings_.push_back(timing);
-  }
-
-  if (frameTimings_.size() == BENCHMARK_TIMED_FRAMES) {
-    finishBenchmark();
-  }
+  collected_.push_back(timing);
 }
 
-void Engine::finishBenchmark() {
-  benchmarkDone_ = true;
-  benchmarkInfo_.width = volkan_.extent().width;
-  benchmarkInfo_.height = volkan_.extent().height;
-
-  printBenchmarkReport(benchmarkInfo_, frameTimings_);
-  appendBenchmarkCsv(BENCHMARK_CSV_PATH, benchmarkInfo_, frameTimings_);
-  std::cout << "Results appended to " << BENCHMARK_CSV_PATH << "\n"
-            << "Benchmark done: WASD now moves the camera." << std::endl;
-  window_.setTitle("Vulkan - benchmark done");
-}
+// ---------------------------------------------------------------------------
+// Camera
+// ---------------------------------------------------------------------------
 
 void Engine::updateCameraFront() {
   glm::vec3 front;

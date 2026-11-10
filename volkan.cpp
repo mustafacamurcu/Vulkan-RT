@@ -815,6 +815,44 @@ std::string Volkan::describeBufferMemory(const BufferData& bufferData,
          ((heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) ? ", VRAM)" : ", system RAM)");
 }
 
+std::vector<uint8_t> Volkan::readStorageImage() {
+  vk::DeviceSize size = vk::DeviceSize(swapChainExtent_.width) * swapChainExtent_.height * 4;
+  BufferData readback = createBuffer(
+      size, vk::BufferUsageFlagBits::eTransferDst,
+      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+  vk::raii::CommandBuffer cmdBuffer = beginSingleTimeCommands();
+
+  // Finish all writes to the image before copying it (it stays in GENERAL layout)
+  vk::ImageMemoryBarrier toCopy;
+  toCopy.setOldLayout(vk::ImageLayout::eGeneral);
+  toCopy.setNewLayout(vk::ImageLayout::eGeneral);
+  toCopy.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+  toCopy.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+  toCopy.setImage(*storageImage_);
+  toCopy.setSubresourceRange({vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+  toCopy.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite);
+  toCopy.setDstAccessMask(vk::AccessFlagBits::eTransferRead);
+  cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                            vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, toCopy);
+
+  vk::BufferImageCopy region;
+  region.setImageSubresource({vk::ImageAspectFlagBits::eColor, 0, 0, 1});
+  region.setImageExtent({swapChainExtent_.width, swapChainExtent_.height, 1});
+  cmdBuffer.copyImageToBuffer(*storageImage_, vk::ImageLayout::eGeneral, *readback.buffer, region);
+
+  // Make the copied bytes visible to the CPU
+  vk::MemoryBarrier toHost(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead);
+  cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
+                            {}, toHost, {}, {});
+  endSingleTimeCommands(cmdBuffer);
+
+  const uint8_t* bytes = static_cast<const uint8_t*>(readback.memory.mapMemory(0, size));
+  std::vector<uint8_t> pixels(bytes, bytes + size);
+  readback.memory.unmapMemory();
+  return pixels;
+}
+
 vk::PhysicalDeviceRayTracingPipelinePropertiesKHR Volkan::getRayTracingProperties() const {
   vk::StructureChain<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceRayTracingPipelinePropertiesKHR> props;
   props = physicalDevice_.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
