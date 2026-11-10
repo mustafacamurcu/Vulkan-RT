@@ -38,9 +38,13 @@ struct RayTracingPushConstants {
   glm::mat4 invProj;
 };
 
-// Camera + scene info for the brute force compute ray tracer (96 bytes)
+// Camera + scene info for the compute ray tracer. 128 bytes: the most push
+// constant space every Vulkan GPU is guaranteed to have.
 struct BruteForcePushConstants {
   glm::mat4 invViewProj;
   glm::vec4 cameraPos;
-  glm::uvec4 params;  // x = cube count, yz = pixel offset of this tile, w = unused
+  glm::uvec4 params;  // x = cube count, yz = pixel offset of this tile, w = grid resolution
+  glm::vec4 gridMin;  // xyz = grid's min corner, w = cell size
+  glm::vec4 gridPad;  // x = largest sphere radius, yzw = unused
 };
+static_assert(sizeof(BruteForcePushConstants) <= 128, "push constants over the guaranteed limit");

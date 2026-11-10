@@ -36,16 +36,22 @@ class Engine {
 
   static constexpr RenderMode RENDER_MODE = RenderMode::BruteForceCompute;
 
-  static constexpr const char* BENCHMARK_LABEL = "02-bounding-sphere";
+  static constexpr const char* BENCHMARK_LABEL = "03-grid-rejection";
+
+  // Cubes are bucketed into a GRID_RESOLUTION^3 grid. A ray tests every cell
+  // (N^3) plus the cubes in the cells it crosses (~1.5M / N^2), so N = 16 keeps
+  // both around 5k: ~10k tests per ray instead of 1M.
+  static constexpr uint32_t GRID_RESOLUTION = 16;
 
   static constexpr uint32_t NUM_CUBES = 1000000;
   // Brute force results with fewer cubes are scaled up to this count (lower bound)
   static constexpr uint32_t PROJECTED_CUBE_COUNT = 1000000;
 
-  // A brute force frame at 1M cubes takes tens of seconds, far past the ~2 s
-  // Windows GPU timeout for one submission. TILE_SIZE > 0 renders the frame in
-  // TILE_SIZE x TILE_SIZE tiles, one submission each. 0 = one dispatch per frame.
-  static constexpr uint32_t TILE_SIZE = 256;
+  // TILE_SIZE > 0 renders the frame in TILE_SIZE x TILE_SIZE tiles, one submission
+  // each, for frames too slow for the ~2 s Windows GPU timeout (brute force took
+  // tens of seconds). 0 = one dispatch per frame. Tiled mode ignores input, so its
+  // images are deterministic: use it for pixel-exact correctness checks.
+  static constexpr uint32_t TILE_SIZE = 0;
   static constexpr bool BRUTE_FORCE_TILED =
       RENDER_MODE == RenderMode::BruteForceCompute && TILE_SIZE > 0;
 
@@ -97,8 +103,12 @@ class Engine {
   vk::raii::AccelerationStructureKHR tlas_ = nullptr;
 
   // Brute force geometry
-  BufferData cubeBuffer_;    // inverse transform per cube (64 B)
-  BufferData sphereBuffer_;  // bounding sphere per cube (16 B)
+  BufferData cubeBuffer_;    // inverse transform per cube (64 B), sorted by grid cell
+  BufferData sphereBuffer_;  // bounding sphere per cube (16 B), sorted by grid cell
+  BufferData cellBuffer_;    // where each cell's cubes start (GRID_RESOLUTION^3 + 1 entries)
+  BufferData cubeIdBuffer_;  // original index of each sorted cube (4 B), for its color
+  glm::vec4 gridMin_{0.0f};  // xyz = grid's min corner, w = cell size
+  float gridPad_ = 0.0f;     // largest sphere radius
 
   // Benchmarking: a pair of GPU timestamps per frame in flight
   vk::raii::QueryPool timestampQueryPool_ = nullptr;

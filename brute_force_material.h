@@ -10,7 +10,8 @@ class BruteForceMaterial : public Material {
   static constexpr uint32_t WORKGROUP_SIZE = 8;
 
   BruteForceMaterial(const Volkan& volkan, const BufferData& cubeBuffer,
-                     const BufferData& sphereBuffer,
+                     const BufferData& sphereBuffer, const BufferData& cellBuffer,
+                     const BufferData& cubeIdBuffer,
                      const vk::raii::ImageView& storageImageView);
 
   // One dispatch covering `region` pixels, starting at the offset in pushConstants.params.yz

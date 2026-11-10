@@ -1,6 +1,7 @@
 #include "engine.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -143,27 +144,73 @@ void Engine::createBruteForceResources() {
     float scale = glm::length(glm::vec3(transforms[i][0]));
     spheres[i] = glm::vec4(center, scale * 0.5f * std::sqrt(3.0f) * RADIUS_PADDING);
   }
+  // Uniform grid: put every cube in the cell that holds its center.
+  // Cells are cubic and span the cube centers' bounding box.
+  glm::vec3 gridLo(FLT_MAX);
+  glm::vec3 gridHi(-FLT_MAX);
+  float maxRadius = 0.0f;
+  for (const glm::vec4& sphere : spheres) {
+    gridLo = glm::min(gridLo, glm::vec3(sphere));
+    gridHi = glm::max(gridHi, glm::vec3(sphere));
+    maxRadius = std::max(maxRadius, sphere.w);
+  }
+  glm::vec3 gridExtent = gridHi - gridLo;
+  // Tiny margin so the cubes at the max corner still land inside the last cell
+  float cellSize = std::max({gridExtent.x, gridExtent.y, gridExtent.z}) / GRID_RESOLUTION * 1.0001f;
+  gridMin_ = glm::vec4(gridLo, cellSize);
+  gridPad_ = maxRadius;
+
+  const uint32_t N = GRID_RESOLUTION;
+  auto cellOf = [&](const glm::vec3& point) {
+    glm::uvec3 c = glm::min(glm::uvec3((point - gridLo) / cellSize), glm::uvec3(N - 1));
+    return c.x + N * (c.y + N * c.z);
+  };
+
+  // Counting sort by cell: count cubes per cell, prefix-sum into start offsets,
+  // then place each cube at its cell's next free slot.
+  std::vector<uint32_t> cellStart(N * N * N + 1, 0);
+  std::vector<uint32_t> cubeCell(spheres.size());
+  for (size_t i = 0; i < spheres.size(); i++) {
+    cubeCell[i] = cellOf(glm::vec3(spheres[i]));
+    cellStart[cubeCell[i] + 1]++;
+  }
+  for (size_t c = 1; c < cellStart.size(); c++) {
+    cellStart[c] += cellStart[c - 1];
+  }
+  std::vector<uint32_t> nextSlot(cellStart.begin(), cellStart.end() - 1);
+  std::vector<glm::mat4> sortedInvTransforms(invTransforms.size());
+  std::vector<glm::vec4> sortedSpheres(spheres.size());
+  std::vector<uint32_t> cubeIds(spheres.size());
+  for (uint32_t i = 0; i < spheres.size(); i++) {
+    uint32_t slot = nextSlot[cubeCell[i]]++;
+    sortedInvTransforms[slot] = invTransforms[i];
+    sortedSpheres[slot] = spheres[i];
+    cubeIds[slot] = i;
+  }
   benchmarkInfo_.cubePrepMs = msSince(start);
 
   // Upload once through staging buffers, so the shader reads from VRAM
   start = Clock::now();
-  cubeBuffer_ = volkan_.createDeviceLocalBuffer(invTransforms.data(),
-                                                sizeof(glm::mat4) * invTransforms.size(),
-                                                vk::BufferUsageFlagBits::eStorageBuffer);
-  sphereBuffer_ = volkan_.createDeviceLocalBuffer(spheres.data(),
-                                                  sizeof(glm::vec4) * spheres.size(),
-                                                  vk::BufferUsageFlagBits::eStorageBuffer);
+  auto upload = [&](const auto& values) {
+    return volkan_.createDeviceLocalBuffer(values.data(), sizeof(values[0]) * values.size(),
+                                           vk::BufferUsageFlagBits::eStorageBuffer);
+  };
+  cubeBuffer_ = upload(sortedInvTransforms);
+  sphereBuffer_ = upload(sortedSpheres);
+  cellBuffer_ = upload(cellStart);
+  cubeIdBuffer_ = upload(cubeIds);
   benchmarkInfo_.uploadMs = msSince(start);
 
   start = Clock::now();
   bruteForceMaterial_ = std::make_unique<BruteForceMaterial>(
-      volkan_, cubeBuffer_, sphereBuffer_, volkan_.storageImageView());
+      volkan_, cubeBuffer_, sphereBuffer_, cellBuffer_, cubeIdBuffer_,
+      volkan_.storageImageView());
   benchmarkInfo_.pipelineMs = msSince(start);
 
-  benchmarkInfo_.renderer = BRUTE_FORCE_TILED ? "brute-force-compute-tiled" : "brute-force-compute";
+  benchmarkInfo_.renderer = BRUTE_FORCE_TILED ? "grid-compute-tiled" : "grid-compute";
   benchmarkInfo_.tileSize = BRUTE_FORCE_TILED ? TILE_SIZE : 0;
-  benchmarkInfo_.linearInCubeCount = true;  // every pixel tests every cube
-  benchmarkInfo_.bytesPerCube = sizeof(glm::mat4) + sizeof(glm::vec4);
+  benchmarkInfo_.linearInCubeCount = false;  // the grid skips most cubes
+  benchmarkInfo_.bytesPerCube = sizeof(glm::mat4) + sizeof(glm::vec4) + sizeof(uint32_t);
   benchmarkInfo_.cubeMemory =
       volkan_.describeBufferMemory(cubeBuffer_, vk::MemoryPropertyFlagBits::eDeviceLocal);
   benchmarkInfo_.workgroupSize = BruteForceMaterial::WORKGROUP_SIZE;
@@ -297,7 +344,9 @@ BruteForcePushConstants Engine::makeBruteForcePushConstants() const {
   BruteForcePushConstants pushConstants;
   pushConstants.invViewProj = glm::inverse(viewProj);
   pushConstants.cameraPos = glm::vec4(camera_.pos, 1.0f);
-  pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, 0);  // tile offset starts at 0
+  pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, GRID_RESOLUTION);  // tile offset starts at 0
+  pushConstants.gridMin = gridMin_;
+  pushConstants.gridPad = glm::vec4(gridPad_, 0.0f, 0.0f, 0.0f);
   return pushConstants;
 }
 

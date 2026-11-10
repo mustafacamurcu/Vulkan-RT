@@ -3,12 +3,16 @@
 
 BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& cubeBuffer,
                                        const BufferData& sphereBuffer,
+                                       const BufferData& cellBuffer,
+                                       const BufferData& cubeIdBuffer,
                                        const vk::raii::ImageView& storageImageView) {
   // Create descriptor set layout
   std::vector<vk::DescriptorSetLayoutBinding> bindings = {
     {0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
     {1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute},
-    {2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute}
+    {2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
+    {3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
+    {4, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute}
   };
 
   vk::DescriptorSetLayoutCreateInfo layoutInfo;
@@ -18,24 +22,21 @@ BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& c
   // Allocate descriptor sets
   descriptorSets = volkan.createDescriptorSets(descriptorSetLayout);
 
-  // Point every frame's set at the cube buffers and the storage image
+  // Point every frame's set at the scene buffers (binding -> buffer) and the storage image
+  const std::pair<uint32_t, const BufferData*> storageBuffers[] = {
+    {0, &cubeBuffer}, {2, &sphereBuffer}, {3, &cellBuffer}, {4, &cubeIdBuffer}};
   for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-    vk::DescriptorBufferInfo cubeInfo(*cubeBuffer.buffer, 0, VK_WHOLE_SIZE);
-    vk::DescriptorBufferInfo sphereInfo(*sphereBuffer.buffer, 0, VK_WHOLE_SIZE);
+    for (const auto& [binding, bufferData] : storageBuffers) {
+      vk::DescriptorBufferInfo bufferInfo(*bufferData->buffer, 0, VK_WHOLE_SIZE);
 
-    vk::WriteDescriptorSet cubeWrite;
-    cubeWrite.setDstSet(*descriptorSets[i]);
-    cubeWrite.setDstBinding(0);
-    cubeWrite.setDescriptorType(vk::DescriptorType::eStorageBuffer);
-    cubeWrite.setBufferInfo(cubeInfo);
+      vk::WriteDescriptorSet bufferWrite;
+      bufferWrite.setDstSet(*descriptorSets[i]);
+      bufferWrite.setDstBinding(binding);
+      bufferWrite.setDescriptorType(vk::DescriptorType::eStorageBuffer);
+      bufferWrite.setBufferInfo(bufferInfo);
 
-    vk::WriteDescriptorSet sphereWrite;
-    sphereWrite.setDstSet(*descriptorSets[i]);
-    sphereWrite.setDstBinding(2);
-    sphereWrite.setDescriptorType(vk::DescriptorType::eStorageBuffer);
-    sphereWrite.setBufferInfo(sphereInfo);
-
-    volkan.device().updateDescriptorSets({cubeWrite, sphereWrite}, {});
+      volkan.device().updateDescriptorSets(bufferWrite, {});
+    }
   }
   updateStorageImage(volkan, storageImageView);
 

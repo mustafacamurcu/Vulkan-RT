@@ -27,3 +27,15 @@ Each cube gets a bounding sphere (16 bytes), and the ray is tested against it be
 | Brute Force | 1,000,000 | 64.6 s |
 | Staging Buffer | 1,000,000 | 39.7 s |
 | Bounding Sphere | 1,000,000 | 17.7 s |
+
+## Grid Rejection
+Cubes are bucketed into a 16x16x16 grid by their center. Each ray first tests the 4,096 cell boxes, padded by the largest cube radius, and only tests the cubes inside the cells it passes through. That is about 10k tests per ray instead of 1M. The rendered image is identical to the previous step.
+
+| Run | Cubes | GPU time per frame |
+| --- | --- | --- |
+| Brute Force | 1,000,000 | 64.6 s |
+| Staging Buffer | 1,000,000 | 39.7 s |
+| Bounding Sphere | 1,000,000 | 17.7 s |
+| Grid Rejection | 1,000,000 | 0.34 s |
+
+A frame is now fast enough to render in a single dispatch instead of tiles: 0.28 s.
