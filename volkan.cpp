@@ -237,7 +237,7 @@ void Volkan::createDescriptorPool() {
   // One descriptor set per frame in flight for each material
   vk::DescriptorPoolSize poolSizes[] = {
       {vk::DescriptorType::eStorageImage, 2 * MAX_FRAMES_IN_FLIGHT},
-      {vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT},
+      {vk::DescriptorType::eStorageBuffer, 2 * MAX_FRAMES_IN_FLIGHT},
       {vk::DescriptorType::eAccelerationStructureKHR, MAX_FRAMES_IN_FLIGHT},
   };
   descriptorPool_ = device_.createDescriptorPool(

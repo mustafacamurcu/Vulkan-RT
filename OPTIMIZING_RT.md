@@ -18,3 +18,12 @@ The cube data is copied into VRAM once, through a staging buffer. Before, the GP
 | --- | --- | --- |
 | Brute Force | 1,000,000 | 64.6 s |
 | Staging Buffer | 1,000,000 | 39.7 s |
+
+## Bounding Sphere
+Each cube gets a bounding sphere (16 bytes), and the ray is tested against it before the full box test. The sphere test is a few multiply-adds with no division, and it rejects almost every cube, so the 64-byte matrix and the expensive box test are only needed on a near-hit. The rendered image is identical to the previous step.
+
+| Run | Cubes | GPU time per frame |
+| --- | --- | --- |
+| Brute Force | 1,000,000 | 64.6 s |
+| Staging Buffer | 1,000,000 | 39.7 s |
+| Bounding Sphere | 1,000,000 | 17.7 s |

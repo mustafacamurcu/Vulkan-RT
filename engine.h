@@ -36,11 +36,7 @@ class Engine {
 
   static constexpr RenderMode RENDER_MODE = RenderMode::BruteForceCompute;
 
-  // Where the brute force shader reads cube data from:
-  // false = system RAM over PCIe (step 00), true = VRAM via a staging buffer (step 01)
-  static constexpr bool CUBES_IN_VRAM = true;
-  static constexpr const char* BENCHMARK_LABEL =
-      CUBES_IN_VRAM ? "01-staging-buffer" : "00-brute-force";
+  static constexpr const char* BENCHMARK_LABEL = "02-bounding-sphere";
 
   static constexpr uint32_t NUM_CUBES = 1000000;
   // Brute force results with fewer cubes are scaled up to this count (lower bound)
@@ -101,7 +97,8 @@ class Engine {
   vk::raii::AccelerationStructureKHR tlas_ = nullptr;
 
   // Brute force geometry
-  BufferData cubeBuffer_;
+  BufferData cubeBuffer_;    // inverse transform per cube (64 B)
+  BufferData sphereBuffer_;  // bounding sphere per cube (16 B)
 
   // Benchmarking: a pair of GPU timestamps per frame in flight
   vk::raii::QueryPool timestampQueryPool_ = nullptr;

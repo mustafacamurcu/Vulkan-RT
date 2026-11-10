@@ -13,6 +13,12 @@ layout(std430, binding = 0) readonly buffer CubeBuffer {
     Cube cubes[];
 };
 
+// Bounding sphere of each cube: xyz = center, w = radius (16 bytes).
+// Kept in its own buffer so rejecting a cube only reads these 16 bytes.
+layout(std430, binding = 2) readonly buffer SphereBuffer {
+    vec4 spheres[];
+};
+
 layout(binding = 1, rgba8) uniform writeonly image2D image;
 
 layout(push_constant) uniform constants
@@ -48,6 +54,17 @@ void main()
     int closestCube = -1;
 
     for (uint i = 0; i < PC.params.x; i++) {
+        // Cheap rejection: does the ray's line pass within the bounding sphere?
+        // A few multiply-adds and no division, versus two matrix products and
+        // six divisions for the box test. Almost every cube is rejected here.
+        vec4 sphere = spheres[i];
+        vec3 toCenter = sphere.xyz - origin;
+        float along = dot(toCenter, direction);
+        float distSq = dot(toCenter, toCenter) - along * along;
+        if (distSq > sphere.w * sphere.w) {
+            continue;
+        }
+
         mat4 invTransform = cubes[i].invTransform;
 
         // Ray in cube space. The transform is linear, so t is the same in both spaces.

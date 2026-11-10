@@ -131,37 +131,41 @@ void Engine::createBruteForceResources() {
   for (size_t i = 0; i < transforms.size(); i++) {
     invTransforms[i] = glm::inverse(transforms[i]);
   }
+
+  // Bounding sphere of each cube, for the cheap rejection test. The unit cube's
+  // corners are sqrt(3)/2 from its center, scaled by the cube's (uniform) scale.
+  // The corners sit exactly on that sphere, so a 0.1% larger radius is a safety
+  // margin against float rounding rejecting a ray that grazes a corner.
+  constexpr float RADIUS_PADDING = 1.001f;
+  std::vector<glm::vec4> spheres(transforms.size());
+  for (size_t i = 0; i < transforms.size(); i++) {
+    glm::vec3 center = glm::vec3(transforms[i][3]);
+    float scale = glm::length(glm::vec3(transforms[i][0]));
+    spheres[i] = glm::vec4(center, scale * 0.5f * std::sqrt(3.0f) * RADIUS_PADDING);
+  }
   benchmarkInfo_.cubePrepMs = msSince(start);
 
+  // Upload once through staging buffers, so the shader reads from VRAM
   start = Clock::now();
-  vk::DeviceSize bufferSize = sizeof(glm::mat4) * invTransforms.size();
-  vk::MemoryPropertyFlags cubeMemory;
-  if (CUBES_IN_VRAM) {
-    // Upload once through a staging buffer, so the shader reads cubes from VRAM
-    // instead of fetching them from system RAM over PCIe every frame
-    cubeMemory = vk::MemoryPropertyFlagBits::eDeviceLocal;
-    cubeBuffer_ = volkan_.createDeviceLocalBuffer(invTransforms.data(), bufferSize,
+  cubeBuffer_ = volkan_.createDeviceLocalBuffer(invTransforms.data(),
+                                                sizeof(glm::mat4) * invTransforms.size(),
+                                                vk::BufferUsageFlagBits::eStorageBuffer);
+  sphereBuffer_ = volkan_.createDeviceLocalBuffer(spheres.data(),
+                                                  sizeof(glm::vec4) * spheres.size(),
                                                   vk::BufferUsageFlagBits::eStorageBuffer);
-  } else {
-    // Naive: one host-visible buffer in system RAM that the GPU reads directly
-    cubeMemory = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
-    cubeBuffer_ = volkan_.createBuffer(bufferSize, vk::BufferUsageFlagBits::eStorageBuffer, cubeMemory);
-    void* data = cubeBuffer_.memory.mapMemory(0, bufferSize);
-    std::memcpy(data, invTransforms.data(), bufferSize);
-    cubeBuffer_.memory.unmapMemory();
-  }
   benchmarkInfo_.uploadMs = msSince(start);
 
   start = Clock::now();
   bruteForceMaterial_ = std::make_unique<BruteForceMaterial>(
-      volkan_, cubeBuffer_, volkan_.storageImageView());
+      volkan_, cubeBuffer_, sphereBuffer_, volkan_.storageImageView());
   benchmarkInfo_.pipelineMs = msSince(start);
 
   benchmarkInfo_.renderer = BRUTE_FORCE_TILED ? "brute-force-compute-tiled" : "brute-force-compute";
   benchmarkInfo_.tileSize = BRUTE_FORCE_TILED ? TILE_SIZE : 0;
   benchmarkInfo_.linearInCubeCount = true;  // every pixel tests every cube
-  benchmarkInfo_.bytesPerCube = sizeof(glm::mat4);
-  benchmarkInfo_.cubeMemory = volkan_.describeBufferMemory(cubeBuffer_, cubeMemory);
+  benchmarkInfo_.bytesPerCube = sizeof(glm::mat4) + sizeof(glm::vec4);
+  benchmarkInfo_.cubeMemory =
+      volkan_.describeBufferMemory(cubeBuffer_, vk::MemoryPropertyFlagBits::eDeviceLocal);
   benchmarkInfo_.workgroupSize = BruteForceMaterial::WORKGROUP_SIZE;
 }
 
