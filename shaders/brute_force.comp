@@ -19,7 +19,7 @@ layout(push_constant) uniform constants
 {
     mat4 invViewProj;
     vec4 cameraPos;
-    uvec4 params;  // x = cube count
+    uvec4 params;  // x = cube count, yz = pixel offset of this tile
 } PC;
 
 // Same per-cube color as the hardware ray tracing path
@@ -32,7 +32,7 @@ vec3 instanceColor(uint id)
 
 void main()
 {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy + PC.params.yz);
     ivec2 size = imageSize(image);
     if (pixel.x >= size.x || pixel.y >= size.y) {
         return;

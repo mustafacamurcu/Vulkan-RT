@@ -91,6 +91,10 @@ void printBenchmarkReport(const BenchmarkInfo& info, const std::vector<FrameTimi
   if (info.workgroupSize > 0) {
     std::cout << "Workgroup       : " << info.workgroupSize << "x" << info.workgroupSize << "\n";
   }
+  if (info.tileSize > 0) {
+    std::cout << "Tiles           : " << info.tileSize << "x" << info.tileSize
+              << " px, one submission each\n";
+  }
   std::cout << "\n-- Setup (CPU wall clock) --\n";
   std::cout << "Scene generation: " << info.sceneGenMs << " ms\n";
   std::cout << "Cube prep       : " << info.cubePrepMs << " ms\n";

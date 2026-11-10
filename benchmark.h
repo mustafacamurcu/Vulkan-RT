@@ -21,6 +21,7 @@ struct BenchmarkInfo {
   uint32_t bytesPerCube = 0;
   std::string cubeMemory;
   uint32_t workgroupSize = 0;
+  uint32_t tileSize = 0;  // 0 = one dispatch per frame
 
   // Brute force cost grows linearly with cube count, so a run with fewer
   // cubes can be scaled up to estimate the full scene. Not valid for a BVH,

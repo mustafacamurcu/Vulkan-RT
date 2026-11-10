@@ -35,14 +35,27 @@ class Engine {
   static constexpr uint32_t HEIGHT = 1080;
 
   static constexpr RenderMode RENDER_MODE = RenderMode::BruteForceCompute;
-  static constexpr const char* BENCHMARK_LABEL = "00-brute-force-10k";
-  static constexpr uint32_t BENCHMARK_WARMUP_FRAMES = 2;
-  static constexpr uint32_t BENCHMARK_TIMED_FRAMES = 30;
 
-  // Brute force over 1M cubes takes ~65 s per frame, far past the ~2 s Windows
-  // GPU timeout for a single dispatch. Render fewer cubes and project the cost.
-  static constexpr uint32_t NUM_CUBES = 10000;
+  // Where the brute force shader reads cube data from:
+  // false = system RAM over PCIe (step 00), true = VRAM via a staging buffer (step 01)
+  static constexpr bool CUBES_IN_VRAM = true;
+  static constexpr const char* BENCHMARK_LABEL =
+      CUBES_IN_VRAM ? "01-staging-buffer" : "00-brute-force";
+
+  static constexpr uint32_t NUM_CUBES = 1000000;
+  // Brute force results with fewer cubes are scaled up to this count (lower bound)
   static constexpr uint32_t PROJECTED_CUBE_COUNT = 1000000;
+
+  // A brute force frame at 1M cubes takes tens of seconds, far past the ~2 s
+  // Windows GPU timeout for one submission. TILE_SIZE > 0 renders the frame in
+  // TILE_SIZE x TILE_SIZE tiles, one submission each. 0 = one dispatch per frame.
+  static constexpr uint32_t TILE_SIZE = 256;
+  static constexpr bool BRUTE_FORCE_TILED =
+      RENDER_MODE == RenderMode::BruteForceCompute && TILE_SIZE > 0;
+
+  // A tiled frame already averages over ~40 tiles, so one is enough (no warm-up)
+  static constexpr uint32_t BENCHMARK_WARMUP_FRAMES = BRUTE_FORCE_TILED ? 0 : 2;
+  static constexpr uint32_t BENCHMARK_TIMED_FRAMES = BRUTE_FORCE_TILED ? 1 : 30;
 
   // The full scene: 1M cubes in a box of half extent 200. Smaller cube counts
   // shrink the box so the cube density (and so the look of the scene) stays the same.
@@ -57,6 +70,9 @@ class Engine {
 
   void drawFrame();
   void recordFrame(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex);
+  BruteForcePushConstants makeBruteForcePushConstants() const;
+  bool renderTiledFrame(FrameTiming& timing);
+  void runTiledBenchmark();
   void collectFrameTiming(uint32_t frameIndex);
   void finishBenchmark();
 

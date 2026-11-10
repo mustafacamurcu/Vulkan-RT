@@ -26,6 +26,9 @@ public:
   BufferData createBuffer(vk::DeviceSize bufferSize,
                           vk::BufferUsageFlags usage,
                           vk::MemoryPropertyFlags properties) const;
+  // Fast-for-the-GPU buffer in VRAM, filled through a temporary staging buffer
+  BufferData createDeviceLocalBuffer(const void* data, vk::DeviceSize size,
+                                     vk::BufferUsageFlags usage);
   vk::DeviceAddress getBufferAddress(const BufferData& bufferData) const;
   vk::raii::AccelerationStructureKHR createBLAS(BufferData& blasBuffer,
                                                  vk::DeviceAddress vertexBufferAddress,

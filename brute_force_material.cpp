@@ -54,7 +54,7 @@ BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& c
 
 void BruteForceMaterial::dispatch(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
                                   const BruteForcePushConstants& pushConstants,
-                                  vk::Extent2D extent) const {
+                                  vk::Extent2D region) const {
   commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
   commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout, 0,
                                    *descriptorSets[frameIndex], {});
@@ -62,8 +62,8 @@ void BruteForceMaterial::dispatch(vk::raii::CommandBuffer& commandBuffer, uint32
       *pipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, pushConstants);
 
   // Round up so partial workgroups cover the image edges (the shader bounds-checks)
-  uint32_t groupsX = (extent.width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-  uint32_t groupsY = (extent.height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+  uint32_t groupsX = (region.width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+  uint32_t groupsY = (region.height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
   commandBuffer.dispatch(groupsX, groupsY, 1);
 }
 

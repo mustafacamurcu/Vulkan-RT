@@ -133,16 +133,23 @@ void Engine::createBruteForceResources() {
   }
   benchmarkInfo_.cubePrepMs = msSince(start);
 
-  // Naive upload: one host-visible buffer the GPU reads directly, no staging
   start = Clock::now();
   vk::DeviceSize bufferSize = sizeof(glm::mat4) * invTransforms.size();
-  vk::MemoryPropertyFlags hostMemory =
-    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
-  cubeBuffer_ = volkan_.createBuffer(bufferSize, vk::BufferUsageFlagBits::eStorageBuffer, hostMemory);
-
-  void* data = cubeBuffer_.memory.mapMemory(0, bufferSize);
-  std::memcpy(data, invTransforms.data(), bufferSize);
-  cubeBuffer_.memory.unmapMemory();
+  vk::MemoryPropertyFlags cubeMemory;
+  if (CUBES_IN_VRAM) {
+    // Upload once through a staging buffer, so the shader reads cubes from VRAM
+    // instead of fetching them from system RAM over PCIe every frame
+    cubeMemory = vk::MemoryPropertyFlagBits::eDeviceLocal;
+    cubeBuffer_ = volkan_.createDeviceLocalBuffer(invTransforms.data(), bufferSize,
+                                                  vk::BufferUsageFlagBits::eStorageBuffer);
+  } else {
+    // Naive: one host-visible buffer in system RAM that the GPU reads directly
+    cubeMemory = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+    cubeBuffer_ = volkan_.createBuffer(bufferSize, vk::BufferUsageFlagBits::eStorageBuffer, cubeMemory);
+    void* data = cubeBuffer_.memory.mapMemory(0, bufferSize);
+    std::memcpy(data, invTransforms.data(), bufferSize);
+    cubeBuffer_.memory.unmapMemory();
+  }
   benchmarkInfo_.uploadMs = msSince(start);
 
   start = Clock::now();
@@ -150,10 +157,11 @@ void Engine::createBruteForceResources() {
       volkan_, cubeBuffer_, volkan_.storageImageView());
   benchmarkInfo_.pipelineMs = msSince(start);
 
-  benchmarkInfo_.renderer = "brute-force-compute";
+  benchmarkInfo_.renderer = BRUTE_FORCE_TILED ? "brute-force-compute-tiled" : "brute-force-compute";
+  benchmarkInfo_.tileSize = BRUTE_FORCE_TILED ? TILE_SIZE : 0;
   benchmarkInfo_.linearInCubeCount = true;  // every pixel tests every cube
   benchmarkInfo_.bytesPerCube = sizeof(glm::mat4);
-  benchmarkInfo_.cubeMemory = volkan_.describeBufferMemory(cubeBuffer_, hostMemory);
+  benchmarkInfo_.cubeMemory = volkan_.describeBufferMemory(cubeBuffer_, cubeMemory);
   benchmarkInfo_.workgroupSize = BruteForceMaterial::WORKGROUP_SIZE;
 }
 
@@ -194,12 +202,17 @@ std::vector<glm::mat4> Engine::createRandomCubeTransforms(uint32_t count) const 
 void Engine::run() {
   std::cout << "Benchmarking " << BENCHMARK_WARMUP_FRAMES << " warm-up + "
             << BENCHMARK_TIMED_FRAMES << " timed frames..." << std::endl;
+  if (BRUTE_FORCE_TILED) {
+    // Renders the frames up front, reports, then keeps showing the last image
+    runTiledBenchmark();
+  }
   lastSubmitTime_ = Clock::now();
 
   while (!window_.shouldClose()) {
     glfwPollEvents();
-    // Keep the camera still while benchmarking so every frame renders the same thing
-    if (benchmarkDone_) {
+    // Keep the camera still while benchmarking so every frame renders the same thing.
+    // Tiled frames take seconds each, so the camera stays put in that mode.
+    if (benchmarkDone_ && !BRUTE_FORCE_TILED) {
       processInput();
     }
     drawFrame();
@@ -215,7 +228,20 @@ void Engine::drawFrame() {
       if (bruteForceMaterial_) {
         bruteForceMaterial_->updateStorageImage(volkan_, volkan_.storageImageView());
       }
+      if (BRUTE_FORCE_TILED && benchmarkDone_) {
+        // The storage image was recreated empty, so render it again (slow!)
+        FrameTiming timing;
+        renderTiledFrame(timing);
+      }
     }
+    return;
+  }
+
+  if (BRUTE_FORCE_TILED) {
+    // The image was rendered tile by tile outside the frame loop; only present it
+    volkan_.beginCommandBuffer();
+    volkan_.copyStorageImageToSwapchain();
+    volkan_.submit();
     return;
   }
 
@@ -251,18 +277,96 @@ void Engine::recordFrame(vk::raii::CommandBuffer& commandBuffer, uint32_t frameI
   if (RENDER_MODE == RenderMode::HardwareRayTracing) {
     rtMaterial_->traceRays(commandBuffer, frameIndex, extent, volkan_, camera_);
   } else {
-    glm::mat4 viewProj = camera_.getProjectionMatrix(extent.width / static_cast<float>(extent.height)) *
-                         camera_.getViewMatrix();
-
-    BruteForcePushConstants pushConstants;
-    pushConstants.invViewProj = glm::inverse(viewProj);
-    pushConstants.cameraPos = glm::vec4(camera_.pos, 1.0f);
-    pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, 0);
-    bruteForceMaterial_->dispatch(commandBuffer, frameIndex, pushConstants, extent);
+    bruteForceMaterial_->dispatch(commandBuffer, frameIndex, makeBruteForcePushConstants(),
+                                  extent);
   }
 
   commandBuffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *timestampQueryPool_,
                                firstQuery + 1);
+}
+
+BruteForcePushConstants Engine::makeBruteForcePushConstants() const {
+  vk::Extent2D extent = volkan_.extent();
+  glm::mat4 viewProj = camera_.getProjectionMatrix(extent.width / static_cast<float>(extent.height)) *
+                       camera_.getViewMatrix();
+
+  BruteForcePushConstants pushConstants;
+  pushConstants.invViewProj = glm::inverse(viewProj);
+  pushConstants.cameraPos = glm::vec4(camera_.pos, 1.0f);
+  pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, 0);  // tile offset starts at 0
+  return pushConstants;
+}
+
+bool Engine::renderTiledFrame(FrameTiming& timing) {
+  vk::Extent2D extent = volkan_.extent();
+  BruteForcePushConstants pushConstants = makeBruteForcePushConstants();
+  float timestampPeriod = volkan_.getTimestampPeriod();
+  uint32_t tilesX = (extent.width + TILE_SIZE - 1) / TILE_SIZE;
+  uint32_t tilesY = (extent.height + TILE_SIZE - 1) / TILE_SIZE;
+
+  timing = FrameTiming();
+  double slowestTileMs = 0.0;
+  auto frameStart = Clock::now();
+
+  for (uint32_t tileY = 0; tileY < tilesY; tileY++) {
+    for (uint32_t tileX = 0; tileX < tilesX; tileX++) {
+      uint32_t offsetX = tileX * TILE_SIZE;
+      uint32_t offsetY = tileY * TILE_SIZE;
+      pushConstants.params.y = offsetX;
+      pushConstants.params.z = offsetY;
+      vk::Extent2D region{std::min(TILE_SIZE, extent.width - offsetX),
+                          std::min(TILE_SIZE, extent.height - offsetY)};
+
+      // Each tile is its own submission, timed with its own pair of timestamps
+      vk::raii::CommandBuffer cmdBuffer = volkan_.beginSingleTimeCommands();
+      cmdBuffer.resetQueryPool(*timestampQueryPool_, 0, 2);
+      cmdBuffer.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands, *timestampQueryPool_, 0);
+      bruteForceMaterial_->dispatch(cmdBuffer, 0, pushConstants, region);
+      cmdBuffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *timestampQueryPool_, 1);
+      volkan_.endSingleTimeCommands(cmdBuffer);
+
+      auto [result, timestamps] = timestampQueryPool_.getResults<uint64_t>(
+          0, 2, 2 * sizeof(uint64_t), sizeof(uint64_t),
+          vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+      double tileMs = (timestamps[1] - timestamps[0]) * timestampPeriod / 1e6;
+      timing.gpuMs += tileMs;
+      slowestTileMs = std::max(slowestTileMs, tileMs);
+
+      // Keep the window responsive during a multi-second frame
+      glfwPollEvents();
+      if (window_.shouldClose()) {
+        return false;
+      }
+      uint32_t tileIndex = tileY * tilesX + tileX + 1;
+      window_.setTitle("Vulkan - tile " + std::to_string(tileIndex) + "/" +
+                       std::to_string(tilesX * tilesY));
+    }
+  }
+
+  timing.frameIntervalMs = msSince(frameStart);
+  std::cout << "  GPU " << timing.gpuMs << " ms, slowest tile " << slowestTileMs
+            << " ms (Windows GPU timeout ~2000 ms)" << std::endl;
+  return true;
+}
+
+void Engine::runTiledBenchmark() {
+  uint32_t totalFrames = BENCHMARK_WARMUP_FRAMES + BENCHMARK_TIMED_FRAMES;
+  for (uint32_t i = 0; i < totalFrames; i++) {
+    bool warmup = i < BENCHMARK_WARMUP_FRAMES;
+    std::cout << (warmup ? "Warm-up frame " : "Timed frame ") << i + 1 << "/" << totalFrames
+              << ":" << std::endl;
+
+    FrameTiming timing;
+    if (!renderTiledFrame(timing)) {
+      std::cout << "Window closed, benchmark aborted." << std::endl;
+      return;
+    }
+    drawFrame();  // show the result
+    if (!warmup) {
+      frameTimings_.push_back(timing);
+    }
+  }
+  finishBenchmark();
 }
 
 void Engine::collectFrameTiming(uint32_t frameIndex) {

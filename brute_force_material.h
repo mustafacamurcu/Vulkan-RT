@@ -12,9 +12,9 @@ class BruteForceMaterial : public Material {
   BruteForceMaterial(const Volkan& volkan, const BufferData& cubeBuffer,
                      const vk::raii::ImageView& storageImageView);
 
-  // One dispatch covering the whole image
+  // One dispatch covering `region` pixels, starting at the offset in pushConstants.params.yz
   void dispatch(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
-                const BruteForcePushConstants& pushConstants, vk::Extent2D extent) const;
+                const BruteForcePushConstants& pushConstants, vk::Extent2D region) const;
 
   void updateStorageImage(const Volkan& volkan, const vk::raii::ImageView& storageImageView);
 };

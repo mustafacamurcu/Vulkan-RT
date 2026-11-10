@@ -42,5 +42,5 @@ struct RayTracingPushConstants {
 struct BruteForcePushConstants {
   glm::mat4 invViewProj;
   glm::vec4 cameraPos;
-  glm::uvec4 params;  // x = cube count, yzw = unused
+  glm::uvec4 params;  // x = cube count, yz = pixel offset of this tile, w = unused
 };

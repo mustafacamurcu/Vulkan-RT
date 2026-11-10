@@ -269,6 +269,33 @@ BufferData Volkan::createBuffer(vk::DeviceSize bufferSize, vk::BufferUsageFlags 
   return BufferData{std::move(buffer), std::move(memory)};
 }
 
+BufferData Volkan::createDeviceLocalBuffer(const void* data, vk::DeviceSize size,
+                                           vk::BufferUsageFlags usage) {
+  // 1. Staging buffer in host-visible memory (system RAM): the CPU can write it
+  BufferData staging = createBuffer(
+      size, vk::BufferUsageFlagBits::eTransferSrc,
+      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+  void* mapped = staging.memory.mapMemory(0, size);
+  std::memcpy(mapped, data, size);
+  staging.memory.unmapMemory();
+
+  // 2. Final buffer in device-local memory (VRAM): fast for the GPU, but the CPU can't write it
+  BufferData buffer = createBuffer(size, usage | vk::BufferUsageFlagBits::eTransferDst,
+                                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+  // 3. The GPU copies staging -> VRAM across PCIe, once
+  vk::raii::CommandBuffer cmdBuffer = beginSingleTimeCommands();
+  cmdBuffer.copyBuffer(*staging.buffer, *buffer.buffer, vk::BufferCopy(0, 0, size));
+
+  // Make the copied data visible to whatever reads the buffer later (shaders, AS builds)
+  vk::MemoryBarrier barrier(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eMemoryRead);
+  cmdBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eAllCommands, {}, barrier, {}, {});
+
+  endSingleTimeCommands(cmdBuffer);  // waits for the copy, so staging can be freed now
+  return buffer;
+}
+
 void Volkan::createFrameData() {
   vk::raii::CommandBuffers commandBuffers(
       device_,
