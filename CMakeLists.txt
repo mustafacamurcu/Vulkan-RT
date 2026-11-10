@@ -69,15 +69,16 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
 )
 
-# Shader compilation target
+# Shader compilation target. -g embeds the GLSL source and line info in the SPIR-V
+# so profilers (Nsight shader profiler) can map GPU time back to shader lines.
 find_program(GLSLC glslc HINTS "$ENV{VULKAN_SDK}/Bin")
 if(GLSLC)
     add_custom_target(shaders ALL
-        COMMAND ${GLSLC} --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/raygen.rgen -o ${CMAKE_SOURCE_DIR}/shaders/raygen.spv
-        COMMAND ${GLSLC} --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/miss.rmiss -o ${CMAKE_SOURCE_DIR}/shaders/miss.spv
-        COMMAND ${GLSLC} --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/closesthit.rchit -o ${CMAKE_SOURCE_DIR}/shaders/closesthit.spv
-        COMMAND ${GLSLC} --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/grid_rejection.comp -o ${CMAKE_SOURCE_DIR}/shaders/grid_rejection.spv
-        COMMAND ${GLSLC} --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.comp -o ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.spv
+        COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/raygen.rgen -o ${CMAKE_SOURCE_DIR}/shaders/raygen.spv
+        COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/miss.rmiss -o ${CMAKE_SOURCE_DIR}/shaders/miss.spv
+        COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/closesthit.rchit -o ${CMAKE_SOURCE_DIR}/shaders/closesthit.spv
+        COMMAND ${GLSLC} -g --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/grid_rejection.comp -o ${CMAKE_SOURCE_DIR}/shaders/grid_rejection.spv
+        COMMAND ${GLSLC} -g --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.comp -o ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.spv
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/shaders
         COMMENT "Compiling shaders..."
     )

@@ -45,9 +45,9 @@ std::vector<const char*> getRequiredExtensions() {
   std::vector<const char*> extensions(glfwExtensions,
                                       glfwExtensions + glfwExtensionCount);
 
-  if (DEBUG) {
-    extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-  }
+  // Always enabled: besides validation messages (Debug only), it provides the
+  // command buffer labels that profilers like Nsight use as perf markers
+  extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
   return extensions;
 }

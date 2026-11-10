@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -14,6 +15,15 @@
 #include "volkan.h"
 #include "window.h"
 
+// Command-line choice: empty = run the benchmark suite, otherwise render one configuration
+struct StartupConfig {
+  std::string view;
+  std::string method;
+  uint32_t gridResolution = 0;
+
+  bool isSingleConfig() const { return !view.empty() || !method.empty() || gridResolution != 0; }
+};
+
 enum class RenderMode {
   HardwareRayTracing,  // BLAS/TLAS + ray tracing pipeline (driver builds a BVH); no benchmark
   GridCompute          // compute shader over a uniform grid; runs the benchmark suite
@@ -21,7 +31,7 @@ enum class RenderMode {
 
 class Engine {
  public:
-  Engine();
+  explicit Engine(const StartupConfig& startup = {});
   ~Engine();
 
   // GLFW holds a pointer to this object, so it must never be copied or moved
@@ -87,6 +97,7 @@ class Engine {
   void createRayTracingResources();
 
   void runBenchmarkSuite();
+  void loadSingleConfig();
   void setView(const BenchmarkView& view);
   void loadGrid(const CubeScene& scene, const GridMethodConfig& method, uint32_t resolution,
                 BenchmarkInfo& info);
@@ -101,6 +112,7 @@ class Engine {
   void updateCameraFront();
   void processInput();
 
+  StartupConfig startup_;
   float yaw_ = 90.0f;
   float pitch_ = 40.0f;
 
@@ -130,6 +142,7 @@ class Engine {
   glm::vec4 gridMin_{0.0f};  // xyz = grid's min corner, w = cell size
   float gridPad_ = 0.0f;     // how much to grow each cell when testing it (rejection only)
   uint32_t gridResolution_ = 0;
+  std::string gridLabel_;    // perf marker name for the dispatch, e.g. "grid-traversal N=64"
 
   // Benchmarking: a pair of GPU timestamps per frame in flight
   vk::raii::QueryPool timestampQueryPool_ = nullptr;

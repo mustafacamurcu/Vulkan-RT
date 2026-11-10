@@ -29,7 +29,7 @@ void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
 
 }  // namespace
 
-Engine::Engine() : window_(WIDTH, HEIGHT, "Vulkan") {
+Engine::Engine(const StartupConfig& startup) : startup_(startup), window_(WIDTH, HEIGHT, "Vulkan") {
   glfwSetWindowUserPointer(window_.handle(), this);
   glfwSetFramebufferSizeCallback(window_.handle(), framebufferResizeCallback);
 
@@ -267,6 +267,7 @@ void Engine::loadGrid(const CubeScene& scene, const GridMethodConfig& method, ui
   gridMin_ = grid.gridMin;
   gridPad_ = grid.pad;
   gridResolution_ = resolution;
+  gridLabel_ = std::string(method.name) + " N=" + std::to_string(resolution);
 }
 
 bool Engine::measureFrames(std::vector<FrameTiming>& timings) {
@@ -310,9 +311,45 @@ void Engine::discardPendingTimings() {
 // Frame loop
 // ---------------------------------------------------------------------------
 
+void Engine::loadSingleConfig() {
+  // Defaults for anything not given on the command line
+  const BenchmarkView* view = &VIEWS[0];
+  const GridMethodConfig* method = &METHODS[1];
+  uint32_t resolution = startup_.gridResolution != 0 ? startup_.gridResolution : 64;
+
+  if (!startup_.view.empty()) {
+    view = nullptr;
+    for (const BenchmarkView& candidate : VIEWS) {
+      if (startup_.view == candidate.name) view = &candidate;
+    }
+    if (!view) throw std::runtime_error("unknown view " + startup_.view + " (try --help)");
+  }
+  if (!startup_.method.empty()) {
+    method = nullptr;
+    for (const GridMethodConfig& candidate : METHODS) {
+      if (startup_.method == candidate.name) method = &candidate;
+    }
+    if (!method) throw std::runtime_error("unknown method " + startup_.method + " (try --help)");
+  }
+
+  CubeScene scene = createCubeScene(NUM_CUBES, SCENE_CENTER, view->sceneHalfExtent);
+  setView(*view);
+  BenchmarkInfo info;
+  loadGrid(scene, *method, resolution, info);
+  std::string title = std::string("Vulkan - ") + view->name + ", " + method->name +
+                      ", N=" + std::to_string(resolution);
+  window_.setTitle(title);
+  std::cout << "Rendering " << view->name << ", " << method->name << ", N=" << resolution
+            << " (" << info.gridEntries << " grid entries)" << std::endl;
+}
+
 void Engine::run() {
   if (RENDER_MODE == RenderMode::GridCompute) {
-    runBenchmarkSuite();
+    if (startup_.isSingleConfig()) {
+      loadSingleConfig();
+    } else {
+      runBenchmarkSuite();
+    }
   }
   benchmarkDone_ = true;
   lastSubmitTime_ = Clock::now();
@@ -345,8 +382,14 @@ void Engine::drawFrame() {
   }
 
   volkan_.beginCommandBuffer();
-  recordFrame(volkan_.currentCommandBuffer(), frameIndex);
+  vk::raii::CommandBuffer& commandBuffer = volkan_.currentCommandBuffer();
+  recordFrame(commandBuffer, frameIndex);
+
+  // Perf markers: named regions that profilers show on their timeline, and that
+  // Nsight's multi-pass metrics use to match the same work across frames
+  commandBuffer.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT("copy to swapchain"));
   volkan_.copyStorageImageToSwapchain();
+  commandBuffer.endDebugUtilsLabelEXT();
   volkan_.submit();
 
   auto now = Clock::now();
@@ -367,9 +410,14 @@ void Engine::recordFrame(vk::raii::CommandBuffer& commandBuffer, uint32_t frameI
 
   vk::Extent2D extent = volkan_.extent();
   if (rtMaterial_) {
+    commandBuffer.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT("hardware-rt"));
     rtMaterial_->traceRays(commandBuffer, frameIndex, extent, volkan_, camera_);
+    commandBuffer.endDebugUtilsLabelEXT();
   } else if (gridMaterial_) {
+    // Same name every frame for a given configuration, e.g. "grid-traversal N=64"
+    commandBuffer.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT(gridLabel_.c_str()));
     gridMaterial_->dispatch(commandBuffer, frameIndex, makeGridPushConstants(), extent);
+    commandBuffer.endDebugUtilsLabelEXT();
   }
 
   commandBuffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *timestampQueryPool_,
