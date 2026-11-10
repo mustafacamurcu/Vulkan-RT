@@ -1,0 +1,33 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 1) in;
+
+layout(constant_id = 1) const int oceanWidth = 100;
+
+struct TaskPayload {
+    uint total_rows;
+    uint total_cols;
+};
+
+taskPayloadSharedEXT TaskPayload payload;
+
+int max_rows_per_mesh_workgroup = 7;
+
+void main() {
+    payload.total_rows = oceanWidth;
+    payload.total_cols = oceanWidth;
+    
+
+    uint num_row_groups = oceanWidth/max_rows_per_mesh_workgroup;
+    uint num_col_groups = oceanWidth/max_rows_per_mesh_workgroup;
+
+    if  (oceanWidth % max_rows_per_mesh_workgroup != 0) {
+        num_row_groups += 1;
+    }
+    if  (oceanWidth % max_rows_per_mesh_workgroup != 0) {
+        num_col_groups += 1;
+    }
+
+    EmitMeshTasksEXT(num_row_groups, num_col_groups, 1);
+}

@@ -1,0 +1,73 @@
+#version 460
+
+// Brute force ray tracer: every pixel tests every cube, keeps the closest hit.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Naive layout: the full 4x4 inverse world transform of each cube (64 bytes).
+// Turns a world-space ray into the cube's local space, where the cube is [-0.5, 0.5]^3.
+struct Cube {
+    mat4 invTransform;
+};
+
+layout(std430, binding = 0) readonly buffer CubeBuffer {
+    Cube cubes[];
+};
+
+layout(binding = 1, rgba8) uniform writeonly image2D image;
+
+layout(push_constant) uniform constants
+{
+    mat4 invViewProj;
+    vec4 cameraPos;
+    uvec4 tileInfo;  // xy = tile offset in pixels, z = cube count
+} PC;
+
+// Same per-cube color as the hardware ray tracing path
+vec3 instanceColor(uint id)
+{
+    float hue = fract(float(id) * 0.61803398875);
+    vec3 rgb = clamp(abs(mod(hue * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    return mix(vec3(1.0), rgb, 0.8);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy + PC.tileInfo.xy);
+    ivec2 size = imageSize(image);
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+
+    // Unproject the pixel onto the far plane to get the ray direction
+    vec2 d = (vec2(pixel) + vec2(0.5)) / vec2(size) * 2.0 - 1.0;
+    vec4 farPoint = PC.invViewProj * vec4(d, 1.0, 1.0);
+    vec3 origin = PC.cameraPos.xyz;
+    vec3 direction = normalize(farPoint.xyz / farPoint.w - origin);
+
+    float closestT = 1e30;
+    int closestCube = -1;
+
+    for (uint i = 0; i < PC.tileInfo.z; i++) {
+        mat4 invTransform = cubes[i].invTransform;
+
+        // Ray in cube space. The transform is linear, so t is the same in both spaces.
+        vec3 localOrigin = (invTransform * vec4(origin, 1.0)).xyz;
+        vec3 localDir = (invTransform * vec4(direction, 0.0)).xyz;
+
+        // Slab test against the unit cube
+        vec3 t1 = (vec3(-0.5) - localOrigin) / localDir;
+        vec3 t2 = (vec3(0.5) - localOrigin) / localDir;
+        vec3 tNear = min(t1, t2);
+        vec3 tFar = max(t1, t2);
+        float tEnter = max(max(tNear.x, tNear.y), tNear.z);
+        float tExit = min(min(tFar.x, tFar.y), tFar.z);
+
+        if (tEnter <= tExit && tExit > 0.0 && tEnter < closestT) {
+            closestT = max(tEnter, 0.0);
+            closestCube = int(i);
+        }
+    }
+
+    vec3 color = closestCube >= 0 ? instanceColor(uint(closestCube)) : vec3(0.0);
+    imageStore(image, pixel, vec4(color, 1.0));
+}

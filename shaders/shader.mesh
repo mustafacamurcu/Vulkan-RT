@@ -1,0 +1,98 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+
+#define MESH_WORKGROUP_SIZE 32
+#define rows_per_work_group 7
+#define cols_per_work_group 7
+
+layout(local_size_x = MESH_WORKGROUP_SIZE) in;
+layout(triangles, max_vertices = 64, max_primitives = 126) out;
+
+layout(location = 0) out vec4 color[];
+layout(location = 1) out vec4 pos[];
+
+
+layout(constant_id = 0) const int NUM_WAVES = 30;
+layout(constant_id = 2) const float cell_width = 1.0f;
+
+struct TaskPayload {
+    uint total_rows;
+    uint total_cols;
+};
+
+taskPayloadSharedEXT TaskPayload payload;
+
+struct Wave {
+    float amp;
+    float phase;
+    float dir_x;
+    float dir_z;
+    float freq;
+    float sharpness;
+};
+
+layout(binding = 0) uniform WavesUBO {
+    Wave waves[NUM_WAVES];
+} waves;
+
+layout( push_constant ) uniform constants
+{
+    float time;
+    mat4 view;
+    mat4 proj;
+} PC;
+
+
+void print_vertex(uint vertex_id, uint rows)
+{
+    uint row = vertex_id / (rows+1) + gl_WorkGroupID.x * rows_per_work_group;
+    uint col = vertex_id % (rows+1) + gl_WorkGroupID.y * cols_per_work_group;
+
+    float x = cell_width*row;
+    float z = cell_width*col;
+    float y = 0;
+    for (uint i = 0; i < NUM_WAVES; i++) {
+        Wave wave = waves.waves[i];
+        float coord = x*wave.dir_x + z*wave.dir_z;
+        y -= exp(sin(coord * wave.freq + PC.time * wave.phase)*wave.sharpness) * wave.amp;
+    }
+
+    vec4 world_pos = vec4(x, y, z, 1.0);
+
+    gl_MeshVerticesEXT[vertex_id].gl_Position = PC.proj * PC.view * world_pos;
+    color[vertex_id] = vec4(1.0f/(payload.total_rows+1)*row, 1.0f/(payload.total_cols+1)*col, 1.0,1.0);
+    pos[vertex_id] = world_pos;
+
+}
+
+void print_triangle(uint cell_id, uint rows)
+{
+    uint row = cell_id / rows;
+    uint col = cell_id % rows;
+    uint tl = col+row*(rows+1);
+    uint tr = col+row*(rows+1)+1;
+    uint bl = col+(row+1) * (rows+1);
+    uint br = col+(row+1) * (rows+1) + 1;
+    gl_PrimitiveTriangleIndicesEXT[cell_id*2] = uvec3(tl,bl,tr);
+    gl_PrimitiveTriangleIndicesEXT[cell_id*2+1] = uvec3(br,tr,bl);
+}
+
+void main()
+{
+    uint row_count = min(rows_per_work_group, payload.total_rows - gl_WorkGroupID.y * rows_per_work_group);
+    uint col_count = min(cols_per_work_group, payload.total_cols - gl_WorkGroupID.x * cols_per_work_group);
+    uint vertex_count = (row_count+1) * (col_count+1);
+    uint primitive_count = row_count * col_count * 2;
+    
+
+    SetMeshOutputsEXT(vertex_count, primitive_count);
+    
+    for (uint task_id = gl_LocalInvocationID.x; task_id < vertex_count; task_id += MESH_WORKGROUP_SIZE) {
+        print_vertex(task_id, row_count);
+    }
+    barrier();
+
+    for (uint task_id = gl_LocalInvocationID.x; task_id < primitive_count/2; task_id += MESH_WORKGROUP_SIZE) {
+         print_triangle(task_id, row_count);
+    }
+}

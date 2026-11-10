@@ -1,0 +1,49 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "windows-default",
+            "displayName": "Windows x64 Debug",
+            "description": "Default Windows build with Visual Studio",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "windows-release",
+            "displayName": "Windows x64 Release",
+            "description": "Release build for Windows",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "windows-ninja",
+            "displayName": "Windows Ninja",
+            "description": "Fast build with Ninja (if installed)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows-debug-build",
+            "configurePreset": "windows-default",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-release-build",
+            "configurePreset": "windows-release",
+            "configuration": "Release"
+        }
+    ]
+}
