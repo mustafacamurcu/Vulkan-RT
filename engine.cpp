@@ -1,4 +1,6 @@
 #include "engine.h"
+#include <algorithm>
+#include <cstring>
 #include <iostream>
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
@@ -8,7 +10,6 @@
 
 #include "vk_utils.h"
 
-#include "water_material.h"
 #include "rt_material.h"
 
 static double msSince(std::chrono::high_resolution_clock::time_point start) {
@@ -23,16 +24,6 @@ static void framebufferResizeCallback(GLFWwindow* window, int width,
   engine->handleFramebufferResized();
 }
 
-static void mouseCallback(GLFWwindow* window, double xpos, double ypos) {
-  Engine* engine = reinterpret_cast<Engine*>(glfwGetWindowUserPointer(window));
-  engine->mouseEvent(xpos, ypos);
-}
-
-void Engine::createWaterPipeline() {
-  waterMaterial_ = std::make_unique<WaterMaterial>(
-      volkan_, WaterMaterial::SpecData{10, 200, 1.0f}, volkan_.renderPass_);
-}
-
 Engine::Engine() {
   createWindow(WIDTH, HEIGHT, "Vulkan Scene");
   volkan_.init(window_);
@@ -42,7 +33,6 @@ Engine::Engine() {
   } else {
     createBruteForceResources();
   }
-  // createWaterPipeline(); // Not used for ray tracing
 }
 
 void Engine::createRayTracingResources() {
@@ -264,7 +254,6 @@ Engine::~Engine() {
 
   // Clean up materials first
   rtMaterial_.reset();
-  waterMaterial_.reset();
   bruteForceMaterial_.reset();
 
   // Clean up brute force resources
@@ -302,12 +291,6 @@ void Engine::run() {
 }
 
 void Engine::drawFrame() {
-  static auto startTime = std::chrono::high_resolution_clock::now();
-  auto currentTime = std::chrono::high_resolution_clock::now();
-
-  float time = std::chrono::duration<float, std::chrono::seconds::period>(
-                   currentTime - startTime)
-                   .count();
   if (!volkan_.nextFrameReady()) {
     if (volkan_.swapchainRecreated_) {
       volkan_.swapchainRecreated_ = false;
@@ -333,14 +316,7 @@ void Engine::drawFrame() {
   }
   // Brute force mode renders in tiles outside the frame loop; here we only present it
   volkan_.copyStorageImageToSwapchain();
-
-  // Old rasterization path (commented out)
-  // volkan_.beginRenderPass();
-  // volkan_.bindPipeline(camera_, time, *waterMaterial_);
-  // volkan_.drawMesh();
-
   volkan_.submit();
-
 }
 
 void Engine::updateCameraFront() {
@@ -374,16 +350,10 @@ void Engine::createWindow(int width, int height, const char* title) {
   window_ = glfwCreateWindow(width, height, "Vulkan", nullptr, nullptr);
   glfwSetWindowUserPointer(window_, this);
   glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
-  glfwSetCursorPosCallback(window_, mouseCallback);
-  glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
 
 void Engine::handleFramebufferResized() {
-  framebufferResized = true;
-}
-
-void Engine::mouseEvent(double xpos, double ypos) {
-  // std::cout << "Mouse moved to: " << xpos << ", " << ypos << std::endl;
+  volkan_.framebufferResized_ = true;
 }
 
 

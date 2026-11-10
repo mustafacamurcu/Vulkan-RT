@@ -4,8 +4,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan_raii.hpp>
 
-#define NUM_WAVES 10
-
 #define MAX_FRAMES_IN_FLIGHT 2
 
 struct BufferData {
@@ -37,13 +35,6 @@ struct Camera {
   }
 };
 
-  
-struct PerFrameVariables {
-  glm::float32 time;
-  alignas(16) glm::mat4 view;
-  glm::mat4 proj;
-  glm::vec4 cameraPos;
-};
 
 // Inverse camera matrices so the raygen shader can turn pixels into rays
 struct RayTracingPushConstants {
@@ -56,17 +47,4 @@ struct BruteForcePushConstants {
   glm::mat4 invViewProj;
   glm::vec4 cameraPos;
   glm::uvec4 tileInfo;  // xy = tile offset in pixels, z = cube count, w = unused
-};
-
-struct alignas(32) Wave {
-  float amp;
-  float phase;
-  float dir_x;
-  float dir_z;
-  float freq;
-  float sharpness;
-};
-
-struct Waves {
-  Wave waves[NUM_WAVES];
 };

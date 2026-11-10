@@ -11,7 +11,6 @@ class Material {
 
   vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
   std::vector<vk::raii::DescriptorSet> descriptorSets;
-  std::vector<BufferData> wavesBuffers;
   vk::raii::PipelineLayout pipelineLayout = nullptr;
   vk::raii::Pipeline pipeline = nullptr;
 };

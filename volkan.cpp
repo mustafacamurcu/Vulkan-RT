@@ -4,27 +4,14 @@
 #define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
 #include <GLFW/glfw3.h>
 
-#include <algorithm>
-#include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
-#include <limits>
-#include <memory>
-#include <optional>
 #include <set>
 #include <stdexcept>
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
-#include <random>
-
-#include "imgui/imgui.h"
-#include "imgui/backends/imgui_impl_glfw.h"
-#include "imgui/backends/imgui_impl_vulkan.h"
 
 #include "volkan.h"
 #include "vk_utils.h"
@@ -37,37 +24,15 @@ const bool DEBUG = false;
 const bool DEBUG = true;
 #endif
 
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+              vk::DebugUtilsMessageTypeFlagsEXT messageType,
+              const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
+              void* pUserData) {
+  std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
 
-// CREATE INSTANCE UTILS
-PFN_vkCreateDebugUtilsMessengerEXT pfnVkCreateDebugUtilsMessengerEXT;
-PFN_vkDestroyDebugUtilsMessengerEXT pfnVkDestroyDebugUtilsMessengerEXT;
-
-#ifndef VKAPI_ATTR VkResult VKAPI_CALL vkCreateDebugUtilsMessengerEXT(
-    VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-    const VkAllocationCallbacks* pAllocator,
-    VkDebugUtilsMessengerEXT* pMessenger) {
-      return pfnVkCreateDebugUtilsMessengerEXT(instance, pCreateInfo,
-                                               pAllocator, pMessenger);
-    }
-#endif
-
-    VKAPI_ATTR void VKAPI_CALL vkDestroyDebugUtilsMessengerEXT(
-        VkInstance instance, VkDebugUtilsMessengerEXT messenger,
-        VkAllocationCallbacks const* pAllocator) {
-      return pfnVkDestroyDebugUtilsMessengerEXT(instance, messenger,
-                                                pAllocator);
-    }
-
-    static VKAPI_ATTR VkBool32 VKAPI_CALL
-    debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                  vk::DebugUtilsMessageTypeFlagsEXT messageType,
-                  const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                  void* pUserData) {
-      std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
-
-      return VK_FALSE;
-    }
-
+  return VK_FALSE;
+}
 
 vk::DebugUtilsMessengerCreateInfoEXT debugUtils() {
   vk::DebugUtilsMessengerCreateInfoEXT createInfo;
@@ -103,11 +68,7 @@ void Volkan::init(GLFWwindow* window) {
   pickPhysicalDevice();
   createLogicalDevice();
   createSwapChain();
-  createImageViews();
-  createRenderPass();
   createCommandPool();
-  createDepthResources();
-  createFramebuffers();
   createDescriptorPool();
   createFrameData();
   createStorageImage();
@@ -181,9 +142,6 @@ void Volkan::createLogicalDevice() {
   }
 
   vk::PhysicalDeviceFeatures deviceFeatures{};
-  // vk::PhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures;
-  // meshShaderFeatures.setTaskShader(true);
-  // meshShaderFeatures.setMeshShader(true);
 
   // Ray tracing features
   vk::PhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures;
@@ -263,70 +221,6 @@ void Volkan::createSwapChain() {
   swapChainExtent_ = extent;
 }
 
-void Volkan::createImageViews() {
-  swapChainImageViews_.clear();
-  for (vk::Image image : swapChainImages_) {
-    vk::ImageViewCreateInfo imageViewCI;
-    imageViewCI.setImage(image);
-    imageViewCI.setViewType(vk::ImageViewType::e2D);
-    imageViewCI.setFormat(swapChainImageFormat_);
-    imageViewCI.setComponents(
-        {vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
-         vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity});
-    imageViewCI.setSubresourceRange(
-        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
-    swapChainImageViews_.push_back(device_.createImageView(imageViewCI));
-  }
-}
-
-void Volkan::createRenderPass() {
-  vk::AttachmentDescription colorAttachment(
-      {}, swapChainImageFormat_, vk::SampleCountFlagBits::e1,
-      vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
-      vk::AttachmentLoadOp::eDontCare,
-      vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined,
-      vk::ImageLayout::ePresentSrcKHR);
-  
-  vk::AttachmentReference colorAttachmentRef(
-      0, vk::ImageLayout::eColorAttachmentOptimal);
-  
-  vk::AttachmentDescription depthAttachment(
-      {}, findDepthFormat(physicalDevice_), vk::SampleCountFlagBits::e1,
-      vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eDontCare,
-      vk::AttachmentLoadOp::eDontCare,
-      vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined,
-      vk::ImageLayout::eDepthStencilAttachmentOptimal);
-  
-  vk::AttachmentReference depthAttachmentRef(
-      1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
-  
-  vk::SubpassDescription subpass;
-  subpass.setColorAttachments(colorAttachmentRef);
-  subpass.setPipelineBindPoint(vk::PipelineBindPoint::eGraphics);
-  subpass.setPDepthStencilAttachment(&depthAttachmentRef);
-  
-  vk::SubpassDependency subpassDependency(
-      vk::SubpassExternal, 0,
-      vk::PipelineStageFlagBits::eColorAttachmentOutput |
-      vk::PipelineStageFlagBits::eLateFragmentTests,
-      vk::PipelineStageFlagBits::eColorAttachmentOutput |
-      vk::PipelineStageFlagBits::eEarlyFragmentTests,
-      vk::AccessFlagBits::eNone |
-      vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-      vk::AccessFlagBits::eColorAttachmentWrite |
-      vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-      {});
-  
-  std::array<vk::AttachmentDescription, 2> attachments =
-  {colorAttachment,depthAttachment}; vk::RenderPassCreateInfo
-  renderPassCreateInfo;
-  renderPassCreateInfo.setAttachments(attachments);
-  renderPassCreateInfo.setSubpasses(subpass);
-  renderPassCreateInfo.setDependencies(subpassDependency);
-  
-  renderPass_ = device_.createRenderPass(renderPassCreateInfo);
-}
-
 vk::raii::DescriptorSetLayout Volkan::createDescriptorSetLayout(vk::DescriptorSetLayoutCreateInfo layoutInfo) {
   return device_.createDescriptorSetLayout(layoutInfo);
 }
@@ -341,38 +235,6 @@ vk::raii::DescriptorSets Volkan::createDescriptorSets(
   return dsets;
 }
 
-BufferData Volkan::allocateUniformBuffer(vk::raii::DescriptorSet& dset, uint64_t size) {
-  vk::BufferCreateInfo bufferCI;
-  bufferCI.setSize(size);
-  bufferCI.setUsage(vk::BufferUsageFlagBits::eUniformBuffer);
-  bufferCI.setSharingMode(vk::SharingMode::eExclusive);
-  vk::raii::Buffer buffer(device_, bufferCI);
-
-  vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
-
-  uint32_t memoryType =
-      findMemoryType(memRequirements.memoryTypeBits,
-                     vk::MemoryPropertyFlagBits::eHostVisible |
-                         vk::MemoryPropertyFlagBits::eHostCoherent, physicalDevice_);
-
-  vk::raii::DeviceMemory memory(device_, {memRequirements.size, memoryType});
-
-  buffer.bindMemory(memory, 0);
-
-  void* mapped = memory.mapMemory(0, size);
-
-  vk::DescriptorBufferInfo info(*buffer, 0, size);
-  vk::WriteDescriptorSet descriptorWrite;
-  descriptorWrite.setBufferInfo(info);
-  descriptorWrite.setDstSet(*dset);
-  descriptorWrite.setDstBinding(0);
-  descriptorWrite.setDstArrayElement(0);
-  descriptorWrite.setDescriptorType(vk::DescriptorType::eUniformBuffer);
-  device_.updateDescriptorSets(descriptorWrite, {});
-  
-  return BufferData(buffer, memory, mapped);
-}
-
 void Volkan::createCommandPool() {
   QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice_, surface_);
   commandPool_ = device_.createCommandPool(
@@ -380,82 +242,15 @@ void Volkan::createCommandPool() {
        queueFamilyIndices.graphicsFamily.value()});
 }
 
-void Volkan::createDepthResources() {
-  vk::Format format = findDepthFormat(physicalDevice_);
-
-  vk::ImageCreateInfo imageCreateInfo{
-      {},
-      vk::ImageType::e2D,
-      format,
-      {swapChainExtent_.width, swapChainExtent_.height, 1},
-      1,
-      1,
-      vk::SampleCountFlagBits::e1,
-      vk::ImageTiling::eOptimal,
-      vk::ImageUsageFlagBits::eDepthStencilAttachment,
-      vk::SharingMode::eExclusive};
-  depthImage_ = device_.createImage(imageCreateInfo);
-
-  vk::MemoryRequirements memRequirements = depthImage_.getMemoryRequirements();
-
-  depthImageMemory_ = device_.allocateMemory(
-      {memRequirements.size,
-       findMemoryType(memRequirements.memoryTypeBits,
-                      vk::MemoryPropertyFlagBits::eDeviceLocal,
-                      physicalDevice_)});
-
-  vk::BindImageMemoryInfo bindInfo;
-  bindInfo.setImage(*depthImage_);
-  bindInfo.setMemory(*depthImageMemory_);
-  bindInfo.setMemoryOffset(0);
-  device_.bindImageMemory2(bindInfo);
-
-  vk::ImageViewCreateInfo imageViewCI;
-  imageViewCI.setImage(*depthImage_);
-  imageViewCI.setViewType(vk::ImageViewType::e2D);
-  imageViewCI.setFormat(format);
-  imageViewCI.setComponents(
-      {vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
-       vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity});
-  imageViewCI.setSubresourceRange(
-      {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
-
-  depthImageView_ = device_.createImageView(imageViewCI);
-}
-
-void Volkan::createFramebuffers() {
-  swapChainFramebuffers_.clear();
-  for (size_t i = 0; i < swapChainImageViews_.size(); i++) {
-    std::array<vk::ImageView, 2> attachments = {swapChainImageViews_[i],
-                                                depthImageView_};
-    vk::FramebufferCreateInfo framebufferInfo;
-    framebufferInfo.setAttachments(attachments);
-    framebufferInfo.setRenderPass(*renderPass_);
-    framebufferInfo.setWidth(swapChainExtent_.width);
-    framebufferInfo.setHeight(swapChainExtent_.height);
-    framebufferInfo.setLayers(1);
-    swapChainFramebuffers_.push_back(device_.createFramebuffer(framebufferInfo));
-  }
-}
-
 void Volkan::createDescriptorPool() {
-  // Lots of pool size for imgui
-  vk::DescriptorPoolSize poolsize[] = {
-      //{vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT},
-      {vk::DescriptorType::eSampler, 1000},
-      {vk::DescriptorType::eCombinedImageSampler, 1000},
-      {vk::DescriptorType::eSampledImage, 1000},
-      {vk::DescriptorType::eStorageImage, 1000},
-      {vk::DescriptorType::eUniformTexelBuffer, 1000},
-      {vk::DescriptorType::eStorageTexelBuffer, 1000},
-      {vk::DescriptorType::eUniformBuffer, 1000},
-      {vk::DescriptorType::eStorageBuffer, 1000},
-      {vk::DescriptorType::eUniformBufferDynamic, 1000},
-      {vk::DescriptorType::eStorageBufferDynamic, 1000},
-      {vk::DescriptorType::eInputAttachment, 1000},
+  // One descriptor set per frame in flight for each material
+  vk::DescriptorPoolSize poolSizes[] = {
+      {vk::DescriptorType::eStorageImage, 2 * MAX_FRAMES_IN_FLIGHT},
+      {vk::DescriptorType::eStorageBuffer, MAX_FRAMES_IN_FLIGHT},
+      {vk::DescriptorType::eAccelerationStructureKHR, MAX_FRAMES_IN_FLIGHT},
   };
   descriptorPool_ = device_.createDescriptorPool(
-      {{vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet}, 1000, poolsize});
+      {vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 2 * MAX_FRAMES_IN_FLIGHT, poolSizes});
 }
 
 BufferData Volkan::createBuffer(vk::DeviceSize bufferSize, vk::BufferUsageFlags usage,
@@ -481,15 +276,6 @@ BufferData Volkan::createBuffer(vk::DeviceSize bufferSize, vk::BufferUsageFlags 
   buffer.bindMemory(memory, 0);
 
   return BufferData(buffer, memory, (void*)nullptr);
-}
-
-BufferData Volkan::createUniformBuffer(uint64_t size) {
-  BufferData bufferData =
-      createBuffer(size, vk::BufferUsageFlagBits::eUniformBuffer,
-                   vk::MemoryPropertyFlagBits::eHostCoherent |
-                       vk::MemoryPropertyFlagBits::eHostVisible);
-  bufferData.mapped = bufferData.memory.mapMemory(0, size);
-  return bufferData;
 }
 
 void Volkan::createFrameData() {
@@ -526,13 +312,7 @@ void Volkan::recreateSwapChain() {
   storageImageView_ = nullptr;
   storageImage_ = nullptr;
   storageImageMemory_ = nullptr;
-  depthImageView_ = nullptr;
-  depthImage_ = nullptr;
-  depthImageMemory_ = nullptr;
   createSwapChain();
-  createImageViews();
-  createDepthResources();
-  createFramebuffers();
   createStorageImage();
   swapchainRecreated_ = true;
 }
@@ -576,65 +356,12 @@ void Volkan::beginCommandBuffer() {
   commandBuffer.begin({});
 }
 
-void Volkan::beginRenderPass() {
-  FrameData& fd = frameDatas_[currentFrame_];
-  auto& commandBuffer = fd.commandBuffer;
-
-  vk::Rect2D renderArea({{0, 0}, swapChainExtent_});
-  std::array<vk::ClearValue, 2> clearValues{};
-  clearValues[0].setColor({0.0f, 0.0f, 0.0f, 1.0f});
-  clearValues[1].setDepthStencil({1.0f, 0});
-  vk::RenderPassBeginInfo renderPassInfo;
-  renderPassInfo.setClearValues(clearValues);
-  renderPassInfo.setRenderArea(renderArea);
-  renderPassInfo.setRenderPass(*renderPass_);
-  renderPassInfo.setFramebuffer(*swapChainFramebuffers_[fd.imageIndex]);
-
-  commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-}
-
-void Volkan::bindPipeline(Camera camera, glm::float32 time,
-                          Material& material) {
-  FrameData& fd = frameDatas_[currentFrame_];
-  auto& commandBuffer = fd.commandBuffer;
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, material.pipeline);
-
-  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                   material.pipelineLayout, 0,
-                                   *material.descriptorSets[currentFrame_], {});
-
-  vk::Viewport viewport(0.0f, 0.0f, swapChainExtent_.width,
-                        swapChainExtent_.height, 0.0f, 1.0f);
-  vk::Rect2D renderArea({{0, 0}, swapChainExtent_});
-  commandBuffer.setViewport(0, viewport);
-  commandBuffer.setScissor(0, renderArea);
-
-  PerFrameVariables pfv = {};
-  pfv.time = time;
-  pfv.view = camera.getViewMatrix();
-  pfv.proj = camera.getProjectionMatrix(
-      swapChainExtent_.width / (float)swapChainExtent_.height);
-  pfv.cameraPos = glm::vec4(camera.pos, 1.0);
-
-  commandBuffer.pushConstants<PerFrameVariables>(
-      material.pipelineLayout,
-      vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eFragment, 0, pfv);
-}
-
-void Volkan::drawMesh() {
-  FrameData& fd = frameDatas_[currentFrame_];
-  auto& commandBuffer = fd.commandBuffer;
-
-  commandBuffer.drawMeshTasksEXT(1, 1, 1);
-}
-
 void Volkan::submit() {
   FrameData& fd = frameDatas_[currentFrame_];
   auto& commandBuffer = fd.commandBuffer;
   vk::PipelineStageFlags waitDestinationStageMask(
       vk::PipelineStageFlagBits::eColorAttachmentOutput);
 
-  // commandBuffer.endRenderPass(); // Not used for ray tracing
   commandBuffer.end();
 
   vk::SubmitInfo submitInfo(*fd.imageAvailableSemaphore,
@@ -666,20 +393,8 @@ vk::raii::ShaderModule Volkan::createShaderModule(const std::string& filename) {
       {{}, code.size(), reinterpret_cast<const uint32_t*>(code.data())});
 }
 
-vk::Viewport Volkan::getViewport()
-{
-  return vk::Viewport(0.0f, 0.0f, swapChainExtent_.width,
-                      swapChainExtent_.height, 0.0f, 1.0f);
-}
-vk::Rect2D Volkan::getScissor() { return vk::Rect2D({0, 0}, swapChainExtent_); }
-
-
 vk::raii::PipelineLayout Volkan::createPipelineLayout(vk::PipelineLayoutCreateInfo plci) {
   return device_.createPipelineLayout(plci);
-}
-
-vk::raii::Pipeline Volkan::createPipeline(vk::GraphicsPipelineCreateInfo gpci) {
-  return device_.createGraphicsPipeline(nullptr, gpci);
 }
 
 void Volkan::copyStorageImageToSwapchain() {
@@ -1090,23 +805,13 @@ void Volkan::cleanupRenderResources() {
     // Clean up frame data (command buffers and sync objects) first
     frameDatas_.clear();
 
-    // Destroy framebuffers and render pass before device destruction
-    swapChainFramebuffers_.clear();
-    renderPass_ = nullptr;
-
     // Clean up ray tracing storage image
     storageImageView_ = nullptr;
     storageImage_ = nullptr;
     storageImageMemory_ = nullptr;
 
     // Clean up swapchain resources
-    swapChainImageViews_.clear();
     swapChain_ = nullptr;
-
-    // Clean up depth resources
-    depthImageView_ = nullptr;
-    depthImage_ = nullptr;
-    depthImageMemory_ = nullptr;
 
     // Clean up pools after all resources using them are destroyed
     descriptorPool_ = nullptr;

@@ -123,25 +123,6 @@ vk::Extent2D chooseSwapExtent(
   }
 }
 
-vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates,
-                               vk::FormatFeatureFlags features,
-                                vk::raii::PhysicalDevice physicalDevice) {
-  for (vk::Format format : candidates) {
-    vk::FormatProperties props = physicalDevice.getFormatProperties(format);
-    if (props.optimalTilingFeatures & features) {
-      return format;
-    }
-  }
-  throw std::runtime_error("failed to find supported format!");
-}
-
-vk::Format findDepthFormat(vk::raii::PhysicalDevice physicalDevice) {
-  return findSupportedFormat(
-      {vk::Format::eD32Sfloat, vk::Format::eD32Sfloat,
-       vk::Format::eD24UnormS8Uint},
-      vk::FormatFeatureFlagBits::eDepthStencilAttachment, physicalDevice);
-}
-
 bool checkValidationLayerSupport(const char* layer_name) {
   uint32_t layerCount;
   vkEnumerateInstanceLayerProperties(&layerCount, nullptr);

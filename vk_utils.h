@@ -42,12 +42,6 @@ vk::PresentModeKHR chooseSwapPresentMode(
 vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
                               GLFWwindow* window);
 
-vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates,
-                               vk::FormatFeatureFlags features,
-                               vk::raii::PhysicalDevice physicalDevice);
-
-vk::Format findDepthFormat(vk::raii::PhysicalDevice physicalDevice);
-
 bool checkValidationLayerSupport(const char* layer_name);
 
 std::vector<char> readFile(const std::string& filename);
