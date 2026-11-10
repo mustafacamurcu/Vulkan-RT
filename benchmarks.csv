@@ -1,3 +1,5 @@
-timestamp,label,gpu,width,height,cubes,bytes_per_cube,tile_size,avg_gpu_ms,min_gpu_ms,max_gpu_ms,avg_wall_ms,max_tile_gpu_ms,mrays_per_s,gtests_per_s,scene_gen_ms,cube_prep_ms,upload_ms,pipeline_ms
-2026-11-09 16:43:17,00-brute-force-baseline,NVIDIA GeForce RTX 3060,1920,1080,1000000,64,256,64575.375,64457.048,64684.905,64864.369,1972.487,0.032,32.111,62.904,30.355,29.928,4.766
-2026-11-09 16:57:44,00-brute-force-baseline,NVIDIA GeForce RTX 3060,1920,1080,1000000,64,256,64622.222,64536.416,64688.572,65130.024,1967.044,0.032,32.088,1423.438,1410.265,17.822,3.576
+timestamp,label,renderer,build,gpu,width,height,cubes,bytes_per_cube,avg_gpu_ms,median_gpu_ms,stddev_gpu_ms,min_gpu_ms,max_gpu_ms,avg_frame_interval_ms,mrays_per_s,gtests_per_s,projected_cubes,projected_gpu_ms,scene_gen_ms,cube_prep_ms,upload_ms,pipeline_ms
+2026-11-09 16:43:17,00-brute-force-baseline,brute-force-compute-tiled,Release,NVIDIA GeForce RTX 3060,1920,1080,1000000,64,64575.375,,,64457.048,64684.905,64864.369,0.032,32.111,1000000,64575.375,62.904,30.355,29.928,4.766
+2026-11-09 16:57:44,00-brute-force-baseline,brute-force-compute-tiled,Debug,NVIDIA GeForce RTX 3060,1920,1080,1000000,64,64622.222,,,64536.416,64688.572,65130.024,0.032,32.088,1000000,64622.222,1423.438,1410.265,17.822,3.576
+2026-11-09 17:39:43,00-brute-force-10k,brute-force-compute,Release,NVIDIA GeForce RTX 3060,1920,1080,10000,64,382.326,370.992,39.471,330.101,501.973,384.985,5.589,55.893,1000000,37099.158,0.644,0.267,0.123,0.835
+2026-11-09 17:40:22,ref-hardware-rt-10k,hardware-rt,Release,NVIDIA GeForce RTX 3060,1920,1080,10000,0,1.185,1.235,0.193,1.005,1.743,6.783,1679.692,,,,0.616,2.583,0.081,18.783

@@ -1,28 +1,35 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
-// Timing for one fully rendered frame
+// Timing for one rendered frame
 struct FrameTiming {
-  double gpuMs = 0.0;          // sum of GPU timestamps over all tiles
-  double wallMs = 0.0;         // CPU wall clock for the whole frame (includes submit/wait overhead)
-  double maxTileGpuMs = 0.0;   // slowest single tile (must stay well under the ~2s Windows TDR limit)
-  uint32_t tileCount = 0;
+  double gpuMs = 0.0;            // GPU timestamps around the render work
+  double frameIntervalMs = 0.0;  // CPU time since the previous frame was submitted
 };
 
 // Everything needed to describe a benchmark run so steps can be compared
 struct BenchmarkInfo {
   std::string label;
+  std::string renderer;
+  std::string buildConfig;
   std::string deviceName;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t cubeCount = 0;
   uint32_t bytesPerCube = 0;
   std::string cubeMemory;
-  uint32_t tileSize = 0;
   uint32_t workgroupSize = 0;
+
+  // Brute force cost grows linearly with cube count, so a run with fewer
+  // cubes can be scaled up to estimate the full scene. Not valid for a BVH,
+  // whose cost grows roughly with log(cube count).
+  bool linearInCubeCount = false;
+  uint32_t projectedCubeCount = 0;
+
   double sceneGenMs = 0.0;     // generating random transforms on the CPU
-  double cubePrepMs = 0.0;     // converting transforms into the GPU layout
+  double cubePrepMs = 0.0;     // inverse transforms (brute force) or BLAS/TLAS build (hardware RT)
   double uploadMs = 0.0;       // creating + filling the cube buffer
   double pipelineMs = 0.0;     // shader module + pipeline creation
 };

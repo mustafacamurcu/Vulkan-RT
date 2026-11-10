@@ -9,12 +9,12 @@ class BruteForceMaterial : public Material {
  public:
   static constexpr uint32_t WORKGROUP_SIZE = 8;
 
-  BruteForceMaterial(Volkan& volkan, BufferData& cubeBuffer,
-                     vk::raii::ImageView& storageImageView);
+  BruteForceMaterial(const Volkan& volkan, const BufferData& cubeBuffer,
+                     const vk::raii::ImageView& storageImageView);
 
-  void dispatchTile(vk::raii::CommandBuffer& commandBuffer,
-                    const BruteForcePushConstants& pushConstants,
-                    uint32_t tileWidth, uint32_t tileHeight);
+  // One dispatch covering the whole image
+  void dispatch(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
+                const BruteForcePushConstants& pushConstants, vk::Extent2D extent) const;
 
-  void updateStorageImage(Volkan& volkan, vk::raii::ImageView& storageImageView);
+  void updateStorageImage(const Volkan& volkan, const vk::raii::ImageView& storageImageView);
 };

@@ -33,6 +33,7 @@ set(SOURCES
     brute_force_material.cpp
     benchmark.cpp
     vk_utils.cpp
+    window.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})
@@ -41,9 +42,18 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}
 )
 
-# Benchmark results are appended here so every optimization step is comparable
 target_compile_definitions(${PROJECT_NAME} PRIVATE
+    # Library configuration macros change what headers compile to, so they must
+    # be identical in every source file. Defining them here guarantees that.
+    GLFW_INCLUDE_VULKAN
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+
+    # Benchmark results are appended here so every optimization step is comparable
     BENCHMARK_CSV_PATH="${CMAKE_SOURCE_DIR}/benchmarks.csv"
+    # Debug/Release, recorded with every result
+    BUILD_CONFIG="$<CONFIG>"
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

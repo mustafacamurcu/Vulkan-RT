@@ -19,7 +19,7 @@ layout(push_constant) uniform constants
 {
     mat4 invViewProj;
     vec4 cameraPos;
-    uvec4 tileInfo;  // xy = tile offset in pixels, z = cube count
+    uvec4 params;  // x = cube count
 } PC;
 
 // Same per-cube color as the hardware ray tracing path
@@ -32,7 +32,7 @@ vec3 instanceColor(uint id)
 
 void main()
 {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy + PC.tileInfo.xy);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
     if (pixel.x >= size.x || pixel.y >= size.y) {
         return;
@@ -47,7 +47,7 @@ void main()
     float closestT = 1e30;
     int closestCube = -1;
 
-    for (uint i = 0; i < PC.tileInfo.z; i++) {
+    for (uint i = 0; i < PC.params.x; i++) {
         mat4 invTransform = cubes[i].invTransform;
 
         // Ray in cube space. The transform is linear, so t is the same in both spaces.

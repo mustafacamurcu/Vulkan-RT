@@ -3,17 +3,17 @@
 
 class Volkan;
 
+// Hardware ray tracing: the driver builds a BVH (BLAS/TLAS) and the RT cores traverse it
 class RayTracingMaterial : public Material {
  public:
-  RayTracingMaterial(Volkan& volkan,
-                     vk::raii::AccelerationStructureKHR& tlas,
-                     vk::raii::ImageView& storageImageView);
+  RayTracingMaterial(const Volkan& volkan,
+                     const vk::raii::AccelerationStructureKHR& tlas,
+                     const vk::raii::ImageView& storageImageView);
 
-  void traceRays(vk::raii::CommandBuffer& commandBuffer,
-                 uint32_t width, uint32_t height, Volkan& volkan,
-                 size_t currentFrameIndex, const Camera& camera);
+  void traceRays(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
+                 vk::Extent2D extent, const Volkan& volkan, const Camera& camera) const;
 
-  void updateStorageImage(Volkan& volkan, vk::raii::ImageView& storageImageView);
+  void updateStorageImage(const Volkan& volkan, const vk::raii::ImageView& storageImageView);
 
  private:
   BufferData raygenSBT_;

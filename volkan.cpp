@@ -1,19 +1,10 @@
-#define GLFW_INCLUDE_VULKAN
-#define GLM_FORCE_RADIANS
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
-#include <GLFW/glfw3.h>
+#include "volkan.h"
 
-#include <cstdint>
 #include <cstring>
-#include <glm/glm.hpp>
 #include <iostream>
 #include <set>
 #include <stdexcept>
-#include <vector>
-#include <vulkan/vulkan_raii.hpp>
 
-#include "volkan.h"
 #include "vk_utils.h"
 
 #define KHRONOS_VALIDATION_LAYER "VK_LAYER_KHRONOS_validation"
@@ -99,8 +90,7 @@ void Volkan::createInstance() {
       instanceCreateInfoChain(instanceCI, debugUtils());
 #endif
 
-  vk::raii::Context context;
-  instance_ = context.createInstance(
+  instance_ = context_.createInstance(
       instanceCreateInfoChain.get<vk::InstanceCreateInfo>());
   // The debug utils extension is only enabled in Debug builds
   if (DEBUG) {
@@ -117,7 +107,7 @@ void Volkan::createSurface() {
 void Volkan::pickPhysicalDevice() {
   vk::raii::PhysicalDevices physicalDevices(instance_);
   for (vk::raii::PhysicalDevice device : physicalDevices) {
-    if (isDeviceSuitable(device, surface_, extensions_)) {
+    if (isDeviceSuitable(device, surface_, DEVICE_EXTENSIONS)) {
       physicalDevice_ = device;
       return;
     }
@@ -159,7 +149,7 @@ void Volkan::createLogicalDevice() {
   deviceCI.setQueueCreateInfos(queueCreateInfos);
   deviceCI.setPEnabledFeatures(&deviceFeatures);
   deviceCI.setPNext(&rayTracingPipelineFeatures);
-  deviceCI.setPEnabledExtensionNames(extensions_);
+  deviceCI.setPEnabledExtensionNames(DEVICE_EXTENSIONS);
 #ifndef NDEBUG
   const std::vector<const char*>layer_names = {KHRONOS_VALIDATION_LAYER};
   deviceCI.setPEnabledLayerNames(layer_names);
@@ -221,13 +211,14 @@ void Volkan::createSwapChain() {
   swapChainExtent_ = extent;
 }
 
-vk::raii::DescriptorSetLayout Volkan::createDescriptorSetLayout(vk::DescriptorSetLayoutCreateInfo layoutInfo) {
+vk::raii::DescriptorSetLayout Volkan::createDescriptorSetLayout(
+    const vk::DescriptorSetLayoutCreateInfo& layoutInfo) const {
   return device_.createDescriptorSetLayout(layoutInfo);
 }
 
 vk::raii::DescriptorSets Volkan::createDescriptorSets(
-    vk::raii::DescriptorSetLayout& layout) {
-  const std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, layout);
+    const vk::raii::DescriptorSetLayout& layout) const {
+  const std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *layout);
   vk::DescriptorSetAllocateInfo allocInfo;
   allocInfo.setDescriptorPool(*descriptorPool_);
   allocInfo.setSetLayouts(layouts);
@@ -254,7 +245,7 @@ void Volkan::createDescriptorPool() {
 }
 
 BufferData Volkan::createBuffer(vk::DeviceSize bufferSize, vk::BufferUsageFlags usage,
-                        vk::MemoryPropertyFlags properties) {
+                                vk::MemoryPropertyFlags properties) const {
   vk::raii::Buffer buffer(device_,
                           {{}, bufferSize, usage, vk::SharingMode::eExclusive});
 
@@ -275,7 +266,7 @@ BufferData Volkan::createBuffer(vk::DeviceSize bufferSize, vk::BufferUsageFlags 
 
   buffer.bindMemory(memory, 0);
 
-  return BufferData(buffer, memory, (void*)nullptr);
+  return BufferData{std::move(buffer), std::move(memory)};
 }
 
 void Volkan::createFrameData() {
@@ -283,12 +274,10 @@ void Volkan::createFrameData() {
       device_,
       {commandPool_, vk::CommandBufferLevel::ePrimary, MAX_FRAMES_IN_FLIGHT});
 
-  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+  for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     vk::raii::Semaphore imageAvailableSemaphore(device_, {{}, nullptr});
     vk::raii::Semaphore renderFinishedSemaphore(device_, {{}, nullptr});
     vk::raii::Fence inFlightFence(device_, {vk::FenceCreateFlagBits::eSignaled});
-    
-
 
     FrameData frameData({std::move(commandBuffers[i]),
                          std::move(imageAvailableSemaphore),
@@ -359,8 +348,9 @@ void Volkan::beginCommandBuffer() {
 void Volkan::submit() {
   FrameData& fd = frameDatas_[currentFrame_];
   auto& commandBuffer = fd.commandBuffer;
-  vk::PipelineStageFlags waitDestinationStageMask(
-      vk::PipelineStageFlagBits::eColorAttachmentOutput);
+  // The swapchain image is written by a copy (transfer stage), so that is the
+  // stage that must wait until the presentation engine has released the image
+  vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eTransfer);
 
   commandBuffer.end();
 
@@ -387,14 +377,14 @@ void Volkan::submit() {
   currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-vk::raii::ShaderModule Volkan::createShaderModule(const std::string& filename) {
-  auto code = readFile(filename);
-  return device_.createShaderModule(
-      {{}, code.size(), reinterpret_cast<const uint32_t*>(code.data())});
+vk::raii::ShaderModule Volkan::createShaderModule(const std::string& filename) const {
+  std::vector<uint32_t> code = readSpirvFile(filename);
+  return device_.createShaderModule({{}, code.size() * sizeof(uint32_t), code.data()});
 }
 
-vk::raii::PipelineLayout Volkan::createPipelineLayout(vk::PipelineLayoutCreateInfo plci) {
-  return device_.createPipelineLayout(plci);
+vk::raii::PipelineLayout Volkan::createPipelineLayout(
+    const vk::PipelineLayoutCreateInfo& layoutInfo) const {
+  return device_.createPipelineLayout(layoutInfo);
 }
 
 void Volkan::copyStorageImageToSwapchain() {
@@ -499,7 +489,7 @@ void Volkan::endSingleTimeCommands(vk::raii::CommandBuffer& cmdBuffer) {
   graphicsQueue_.waitIdle();
 }
 
-vk::DeviceAddress Volkan::getBufferAddress(BufferData& bufferData) {
+vk::DeviceAddress Volkan::getBufferAddress(const BufferData& bufferData) const {
   vk::BufferDeviceAddressInfo addressInfo;
   addressInfo.setBuffer(*bufferData.buffer);
   return device_.getBufferAddress(addressInfo);
@@ -584,7 +574,7 @@ vk::raii::AccelerationStructureKHR Volkan::createBLAS(BufferData& blasBuffer,
 }
 
 vk::raii::AccelerationStructureKHR Volkan::createTLAS(BufferData& tlasBuffer,
-                                                       vk::raii::AccelerationStructureKHR& blas,
+                                                       const vk::raii::AccelerationStructureKHR& blas,
                                                        const std::vector<glm::mat4>& transforms) {
   // Get BLAS device address
   vk::AccelerationStructureDeviceAddressInfoKHR blasAddressInfo;
@@ -757,30 +747,33 @@ void Volkan::createStorageImage() {
   graphicsQueue_.waitIdle();
 }
 
-vk::raii::Pipeline Volkan::createRayTracingPipeline(vk::RayTracingPipelineCreateInfoKHR pipelineInfo) {
+vk::raii::Pipeline Volkan::createRayTracingPipeline(
+    const vk::RayTracingPipelineCreateInfoKHR& pipelineInfo) const {
   return device_.createRayTracingPipelineKHR(nullptr, nullptr, pipelineInfo);
 }
 
-vk::raii::Pipeline Volkan::createComputePipeline(vk::ComputePipelineCreateInfo pipelineInfo) {
+vk::raii::Pipeline Volkan::createComputePipeline(
+    const vk::ComputePipelineCreateInfo& pipelineInfo) const {
   return device_.createComputePipeline(nullptr, pipelineInfo);
 }
 
-vk::raii::QueryPool Volkan::createTimestampQueryPool(uint32_t queryCount) {
+vk::raii::QueryPool Volkan::createTimestampQueryPool(uint32_t queryCount) const {
   vk::QueryPoolCreateInfo createInfo;
   createInfo.setQueryType(vk::QueryType::eTimestamp);
   createInfo.setQueryCount(queryCount);
   return device_.createQueryPool(createInfo);
 }
 
-float Volkan::getTimestampPeriod() {
+float Volkan::getTimestampPeriod() const {
   return physicalDevice_.getProperties().limits.timestampPeriod;
 }
 
-std::string Volkan::getDeviceName() {
+std::string Volkan::getDeviceName() const {
   return std::string(physicalDevice_.getProperties().deviceName.data());
 }
 
-std::string Volkan::describeBufferMemory(BufferData& bufferData, vk::MemoryPropertyFlags properties) {
+std::string Volkan::describeBufferMemory(const BufferData& bufferData,
+                                         vk::MemoryPropertyFlags properties) const {
   // Same lookup createBuffer() does, so this reports where the buffer actually lives
   vk::MemoryRequirements memRequirements = bufferData.buffer.getMemoryRequirements();
   uint32_t typeIndex = findMemoryType(memRequirements.memoryTypeBits, properties, physicalDevice_);
@@ -795,25 +788,8 @@ std::string Volkan::describeBufferMemory(BufferData& bufferData, vk::MemoryPrope
          ((heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) ? ", VRAM)" : ", system RAM)");
 }
 
-vk::PhysicalDeviceRayTracingPipelinePropertiesKHR Volkan::getRayTracingProperties() {
+vk::PhysicalDeviceRayTracingPipelinePropertiesKHR Volkan::getRayTracingProperties() const {
   vk::StructureChain<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceRayTracingPipelinePropertiesKHR> props;
   props = physicalDevice_.getProperties2<vk::PhysicalDeviceProperties2,vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
   return props.get<vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
-}
-
-void Volkan::cleanupRenderResources() {
-    // Clean up frame data (command buffers and sync objects) first
-    frameDatas_.clear();
-
-    // Clean up ray tracing storage image
-    storageImageView_ = nullptr;
-    storageImage_ = nullptr;
-    storageImageMemory_ = nullptr;
-
-    // Clean up swapchain resources
-    swapChain_ = nullptr;
-
-    // Clean up pools after all resources using them are destroyed
-    descriptorPool_ = nullptr;
-    commandPool_ = nullptr;
 }

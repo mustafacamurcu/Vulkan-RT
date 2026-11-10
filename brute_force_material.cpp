@@ -1,10 +1,8 @@
 #include "brute_force_material.h"
 #include "volkan.h"
 
-#include <vulkan/vulkan_raii.hpp>
-
-BruteForceMaterial::BruteForceMaterial(Volkan& volkan, BufferData& cubeBuffer,
-                                       vk::raii::ImageView& storageImageView) : Material() {
+BruteForceMaterial::BruteForceMaterial(const Volkan& volkan, const BufferData& cubeBuffer,
+                                       const vk::raii::ImageView& storageImageView) {
   // Create descriptor set layout
   std::vector<vk::DescriptorSetLayoutBinding> bindings = {
     {0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
@@ -18,8 +16,8 @@ BruteForceMaterial::BruteForceMaterial(Volkan& volkan, BufferData& cubeBuffer,
   // Allocate descriptor sets
   descriptorSets = volkan.createDescriptorSets(descriptorSetLayout);
 
-  // Update descriptor sets (for both frames)
-  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+  // Point every frame's set at the cube buffer and the storage image
+  for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     vk::DescriptorBufferInfo bufferInfo;
     bufferInfo.setBuffer(*cubeBuffer.buffer);
     bufferInfo.setOffset(0);
@@ -31,19 +29,9 @@ BruteForceMaterial::BruteForceMaterial(Volkan& volkan, BufferData& cubeBuffer,
     bufferWrite.setDescriptorType(vk::DescriptorType::eStorageBuffer);
     bufferWrite.setBufferInfo(bufferInfo);
 
-    vk::DescriptorImageInfo imageInfo;
-    imageInfo.setImageView(*storageImageView);
-    imageInfo.setImageLayout(vk::ImageLayout::eGeneral);
-
-    vk::WriteDescriptorSet imageWrite;
-    imageWrite.setDstSet(*descriptorSets[i]);
-    imageWrite.setDstBinding(1);
-    imageWrite.setDescriptorType(vk::DescriptorType::eStorageImage);
-    imageWrite.setImageInfo(imageInfo);
-
-    std::vector<vk::WriteDescriptorSet> writes = {bufferWrite, imageWrite};
-    volkan.device_.updateDescriptorSets(writes, {});
+    volkan.device().updateDescriptorSets(bufferWrite, {});
   }
+  updateStorageImage(volkan, storageImageView);
 
   // Create pipeline layout
   vk::PushConstantRange pushConstantRange(vk::ShaderStageFlagBits::eCompute, 0,
@@ -64,22 +52,24 @@ BruteForceMaterial::BruteForceMaterial(Volkan& volkan, BufferData& cubeBuffer,
   pipeline = volkan.createComputePipeline(pipelineInfo);
 }
 
-void BruteForceMaterial::dispatchTile(vk::raii::CommandBuffer& commandBuffer,
-                                      const BruteForcePushConstants& pushConstants,
-                                      uint32_t tileWidth, uint32_t tileHeight) {
+void BruteForceMaterial::dispatch(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
+                                  const BruteForcePushConstants& pushConstants,
+                                  vk::Extent2D extent) const {
   commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
   commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout, 0,
-                                   *descriptorSets[0], {});
+                                   *descriptorSets[frameIndex], {});
   commandBuffer.pushConstants<BruteForcePushConstants>(
       *pipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, pushConstants);
 
-  uint32_t groupsX = (tileWidth + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-  uint32_t groupsY = (tileHeight + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+  // Round up so partial workgroups cover the image edges (the shader bounds-checks)
+  uint32_t groupsX = (extent.width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+  uint32_t groupsY = (extent.height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
   commandBuffer.dispatch(groupsX, groupsY, 1);
 }
 
-void BruteForceMaterial::updateStorageImage(Volkan& volkan, vk::raii::ImageView& storageImageView) {
-  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+void BruteForceMaterial::updateStorageImage(const Volkan& volkan,
+                                            const vk::raii::ImageView& storageImageView) {
+  for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     vk::DescriptorImageInfo imageInfo;
     imageInfo.setImageView(*storageImageView);
     imageInfo.setImageLayout(vk::ImageLayout::eGeneral);
@@ -90,6 +80,6 @@ void BruteForceMaterial::updateStorageImage(Volkan& volkan, vk::raii::ImageView&
     imageWrite.setDescriptorType(vk::DescriptorType::eStorageImage);
     imageWrite.setImageInfo(imageInfo);
 
-    volkan.device_.updateDescriptorSets({imageWrite}, {});
+    volkan.device().updateDescriptorSets(imageWrite, {});
   }
 }

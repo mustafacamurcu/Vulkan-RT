@@ -1,12 +1,13 @@
-#include <vulkan/vulkan_raii.hpp>
-#include <optional>
-#include <set>
-#include <GLFW/glfw3.h>
-#include <fstream>
-
 #include "vk_utils.h"
 
-QueueFamilyIndices findQueueFamilies(vk::raii::PhysicalDevice device,
+#include <algorithm>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <set>
+#include <stdexcept>
+
+QueueFamilyIndices findQueueFamilies(const vk::raii::PhysicalDevice& device,
                                      const vk::raii::SurfaceKHR& surface) {
   QueueFamilyIndices indices;
 
@@ -32,8 +33,8 @@ QueueFamilyIndices findQueueFamilies(vk::raii::PhysicalDevice device,
   return indices;
 }
 
-bool checkDeviceExtensionSupport(vk::raii::PhysicalDevice device,
-                                 const std::vector<const char*> extensions) {
+bool checkDeviceExtensionSupport(const vk::raii::PhysicalDevice& device,
+                                 const std::vector<const char*>& extensions) {
   std::vector<vk::ExtensionProperties> availableExtensions =
       device.enumerateDeviceExtensionProperties();
 
@@ -47,8 +48,8 @@ bool checkDeviceExtensionSupport(vk::raii::PhysicalDevice device,
   return requiredExtensions.empty();
 }
 
-SwapChainSupportDetails querySwapChainSupport(
-    vk::raii::PhysicalDevice device, const vk::raii::SurfaceKHR& surface) {
+SwapChainSupportDetails querySwapChainSupport(const vk::raii::PhysicalDevice& device,
+                                              const vk::raii::SurfaceKHR& surface) {
   vk::SurfaceCapabilitiesKHR capabilities =
       device.getSurfaceCapabilitiesKHR(surface);
   std::vector<vk::SurfaceFormatKHR> formats =
@@ -59,9 +60,9 @@ SwapChainSupportDetails querySwapChainSupport(
   return {capabilities, formats, presentModes};
 }
 
-bool isDeviceSuitable(vk::raii::PhysicalDevice device,
+bool isDeviceSuitable(const vk::raii::PhysicalDevice& device,
                       const vk::raii::SurfaceKHR& surface,
-                      const std::vector<const char*> extensions) {
+                      const std::vector<const char*>& extensions) {
   QueueFamilyIndices indices = findQueueFamilies(device, surface);
 
   bool extensionsSupported = checkDeviceExtensionSupport(device, extensions);
@@ -123,7 +124,7 @@ vk::Extent2D chooseSwapExtent(
   }
 }
 
-bool checkValidationLayerSupport(const char* layer_name) {
+bool checkValidationLayerSupport(const char* layerName) {
   uint32_t layerCount;
   vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
 
@@ -131,7 +132,7 @@ bool checkValidationLayerSupport(const char* layer_name) {
   vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
 
   for (const auto& layerProperties : availableLayers) {
-    if (strcmp(layer_name, layerProperties.layerName) == 0) {
+    if (strcmp(layerName, layerProperties.layerName) == 0) {
       return true;
     }
   }
@@ -139,24 +140,27 @@ bool checkValidationLayerSupport(const char* layer_name) {
   return false;
 }
 
-std::vector<char> readFile(const std::string& filename) {
+std::vector<uint32_t> readSpirvFile(const std::string& filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
-
   if (!file.is_open()) {
-    throw std::runtime_error("failed to open file!");
+    // Say which file: the usual cause is running from the wrong working directory
+    throw std::runtime_error("failed to open " + filename);
   }
-  size_t fileSize = (size_t)file.tellg();
-  std::vector<char> buffer(fileSize);
-  file.seekg(0);
-  file.read(buffer.data(), fileSize);
-  file.close();
 
-  return buffer;
+  size_t fileSize = static_cast<size_t>(file.tellg());
+  if (fileSize % sizeof(uint32_t) != 0) {
+    throw std::runtime_error(filename + " is not valid SPIR-V (size not a multiple of 4)");
+  }
+
+  std::vector<uint32_t> words(fileSize / sizeof(uint32_t));
+  file.seekg(0);
+  file.read(reinterpret_cast<char*>(words.data()), fileSize);
+  return words;
 }
 
 uint32_t findMemoryType(uint32_t typeFilter,
                         vk::MemoryPropertyFlags properties,
-                        vk::raii::PhysicalDevice physicalDevice) {
+                        const vk::raii::PhysicalDevice& physicalDevice) {
   vk::PhysicalDeviceMemoryProperties memProperties =
       physicalDevice.getMemoryProperties();
 

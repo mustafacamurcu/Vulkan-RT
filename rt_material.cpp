@@ -1,11 +1,11 @@
 #include "rt_material.h"
 #include "volkan.h"
 
-#include <vulkan/vulkan_raii.hpp>
+#include <cstring>
 
-RayTracingMaterial::RayTracingMaterial(Volkan& volkan,
-                                       vk::raii::AccelerationStructureKHR& tlas,
-                                       vk::raii::ImageView& storageImageView) : Material() {
+RayTracingMaterial::RayTracingMaterial(const Volkan& volkan,
+                                       const vk::raii::AccelerationStructureKHR& tlas,
+                                       const vk::raii::ImageView& storageImageView) {
   // Create descriptor set layout
   std::vector<vk::DescriptorSetLayoutBinding> bindings = {
     {0, vk::DescriptorType::eAccelerationStructureKHR, 1, vk::ShaderStageFlagBits::eRaygenKHR},
@@ -20,7 +20,7 @@ RayTracingMaterial::RayTracingMaterial(Volkan& volkan,
   descriptorSets = volkan.createDescriptorSets(descriptorSetLayout);
 
   // Update descriptor sets (for both frames)
-  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+  for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     vk::WriteDescriptorSetAccelerationStructureKHR asInfo;
     asInfo.setAccelerationStructures(*tlas);
 
@@ -42,7 +42,7 @@ RayTracingMaterial::RayTracingMaterial(Volkan& volkan,
     imageWrite.setImageInfo(imageInfo);
 
     std::vector<vk::WriteDescriptorSet> writes = {asWrite, imageWrite};
-    volkan.device_.updateDescriptorSets(writes, {});
+    volkan.device().updateDescriptorSets(writes, {});
   }
 
   // Create pipeline layout
@@ -132,9 +132,12 @@ RayTracingMaterial::RayTracingMaterial(Volkan& volkan,
   hitSBT_.memory.unmapMemory();
 }
 
-void RayTracingMaterial::traceRays(vk::raii::CommandBuffer& commandBuffer,
-                                   uint32_t width, uint32_t height, Volkan& volkan,
-                                   size_t currentFrameIndex, const Camera& camera) {
+void RayTracingMaterial::traceRays(vk::raii::CommandBuffer& commandBuffer, uint32_t frameIndex,
+                                   vk::Extent2D extent, const Volkan& volkan,
+                                   const Camera& camera) const {
+  uint32_t width = extent.width;
+  uint32_t height = extent.height;
+
   auto rtProps = volkan.getRayTracingProperties();
   uint32_t handleSize = rtProps.shaderGroupHandleSize;
   uint32_t handleAlignment = rtProps.shaderGroupHandleAlignment;
@@ -150,15 +153,15 @@ void RayTracingMaterial::traceRays(vk::raii::CommandBuffer& commandBuffer,
   // Get buffer addresses
   vk::BufferDeviceAddressInfo raygenAddrInfo;
   raygenAddrInfo.setBuffer(*raygenSBT_.buffer);
-  vk::DeviceAddress raygenAddr = volkan.device_.getBufferAddress(raygenAddrInfo);
+  vk::DeviceAddress raygenAddr = volkan.device().getBufferAddress(raygenAddrInfo);
 
   vk::BufferDeviceAddressInfo missAddrInfo;
   missAddrInfo.setBuffer(*missSBT_.buffer);
-  vk::DeviceAddress missAddr = volkan.device_.getBufferAddress(missAddrInfo);
+  vk::DeviceAddress missAddr = volkan.device().getBufferAddress(missAddrInfo);
 
   vk::BufferDeviceAddressInfo hitAddrInfo;
   hitAddrInfo.setBuffer(*hitSBT_.buffer);
-  vk::DeviceAddress hitAddr = volkan.device_.getBufferAddress(hitAddrInfo);
+  vk::DeviceAddress hitAddr = volkan.device().getBufferAddress(hitAddrInfo);
 
   // Setup SBT regions
   vk::StridedDeviceAddressRegionKHR raygenRegion;
@@ -181,7 +184,7 @@ void RayTracingMaterial::traceRays(vk::raii::CommandBuffer& commandBuffer,
   // Bind pipeline and descriptor sets
   commandBuffer.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *pipeline);
   commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eRayTracingKHR, *pipelineLayout, 0,
-                                   *descriptorSets[currentFrameIndex], {});
+                                   *descriptorSets[frameIndex], {});
 
   RayTracingPushConstants pushConstants;
   pushConstants.invView = glm::inverse(camera.getViewMatrix());
@@ -194,8 +197,9 @@ void RayTracingMaterial::traceRays(vk::raii::CommandBuffer& commandBuffer,
                              width, height, 1);
 }
 
-void RayTracingMaterial::updateStorageImage(Volkan& volkan, vk::raii::ImageView& storageImageView) {
-  for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+void RayTracingMaterial::updateStorageImage(const Volkan& volkan,
+                                            const vk::raii::ImageView& storageImageView) {
+  for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     vk::DescriptorImageInfo imageInfo;
     imageInfo.setImageView(*storageImageView);
     imageInfo.setImageLayout(vk::ImageLayout::eGeneral);
@@ -206,6 +210,6 @@ void RayTracingMaterial::updateStorageImage(Volkan& volkan, vk::raii::ImageView&
     imageWrite.setDescriptorType(vk::DescriptorType::eStorageImage);
     imageWrite.setImageInfo(imageInfo);
 
-    volkan.device_.updateDescriptorSets({imageWrite}, {});
+    volkan.device().updateDescriptorSets({imageWrite}, {});
   }
 }
