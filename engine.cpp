@@ -144,49 +144,63 @@ void Engine::createBruteForceResources() {
     float scale = glm::length(glm::vec3(transforms[i][0]));
     spheres[i] = glm::vec4(center, scale * 0.5f * std::sqrt(3.0f) * RADIUS_PADDING);
   }
-  // Uniform grid: put every cube in the cell that holds its center.
-  // Cells are cubic and span the cube centers' bounding box.
+  // Uniform grid for 3D-DDA traversal. The ray only visits cells it actually
+  // crosses, so every cube must be listed in EVERY cell its bounding box
+  // overlaps (a cube centered in a cell the ray skips can still stick into one
+  // it visits). Cells are cubic and span the bounding boxes of all cubes.
   glm::vec3 gridLo(FLT_MAX);
   glm::vec3 gridHi(-FLT_MAX);
-  float maxRadius = 0.0f;
   for (const glm::vec4& sphere : spheres) {
-    gridLo = glm::min(gridLo, glm::vec3(sphere));
-    gridHi = glm::max(gridHi, glm::vec3(sphere));
-    maxRadius = std::max(maxRadius, sphere.w);
+    gridLo = glm::min(gridLo, glm::vec3(sphere) - sphere.w);
+    gridHi = glm::max(gridHi, glm::vec3(sphere) + sphere.w);
   }
   glm::vec3 gridExtent = gridHi - gridLo;
-  // Tiny margin so the cubes at the max corner still land inside the last cell
+  // Tiny margin so boxes touching the max corner still land inside the last cell
   float cellSize = std::max({gridExtent.x, gridExtent.y, gridExtent.z}) / GRID_RESOLUTION * 1.0001f;
   gridMin_ = glm::vec4(gridLo, cellSize);
-  gridPad_ = maxRadius;
 
   const uint32_t N = GRID_RESOLUTION;
-  auto cellOf = [&](const glm::vec3& point) {
-    glm::uvec3 c = glm::min(glm::uvec3((point - gridLo) / cellSize), glm::uvec3(N - 1));
-    return c.x + N * (c.y + N * c.z);
+  auto cellCoord = [&](const glm::vec3& point) {
+    return glm::min(glm::uvec3((point - gridLo) / cellSize), glm::uvec3(N - 1));
+  };
+  // Calls visit(cellIndex) for every cell the sphere's bounding box overlaps
+  auto forEachOverlappedCell = [&](const glm::vec4& sphere, auto&& visit) {
+    glm::uvec3 lo = cellCoord(glm::vec3(sphere) - sphere.w);
+    glm::uvec3 hi = cellCoord(glm::vec3(sphere) + sphere.w);
+    for (uint32_t z = lo.z; z <= hi.z; z++) {
+      for (uint32_t y = lo.y; y <= hi.y; y++) {
+        for (uint32_t x = lo.x; x <= hi.x; x++) {
+          visit(x + N * (y + N * z));
+        }
+      }
+    }
   };
 
-  // Counting sort by cell: count cubes per cell, prefix-sum into start offsets,
-  // then place each cube at its cell's next free slot.
+  // Counting sort by cell: count entries per cell, prefix-sum into start offsets,
+  // then copy each cube into every cell it overlaps.
   std::vector<uint32_t> cellStart(N * N * N + 1, 0);
-  std::vector<uint32_t> cubeCell(spheres.size());
-  for (size_t i = 0; i < spheres.size(); i++) {
-    cubeCell[i] = cellOf(glm::vec3(spheres[i]));
-    cellStart[cubeCell[i] + 1]++;
+  for (const glm::vec4& sphere : spheres) {
+    forEachOverlappedCell(sphere, [&](uint32_t cell) { cellStart[cell + 1]++; });
   }
   for (size_t c = 1; c < cellStart.size(); c++) {
     cellStart[c] += cellStart[c - 1];
   }
+  uint32_t entryCount = cellStart.back();
   std::vector<uint32_t> nextSlot(cellStart.begin(), cellStart.end() - 1);
-  std::vector<glm::mat4> sortedInvTransforms(invTransforms.size());
-  std::vector<glm::vec4> sortedSpheres(spheres.size());
-  std::vector<uint32_t> cubeIds(spheres.size());
+  std::vector<glm::mat4> sortedInvTransforms(entryCount);
+  std::vector<glm::vec4> sortedSpheres(entryCount);
+  std::vector<uint32_t> cubeIds(entryCount);
   for (uint32_t i = 0; i < spheres.size(); i++) {
-    uint32_t slot = nextSlot[cubeCell[i]]++;
-    sortedInvTransforms[slot] = invTransforms[i];
-    sortedSpheres[slot] = spheres[i];
-    cubeIds[slot] = i;
+    forEachOverlappedCell(spheres[i], [&](uint32_t cell) {
+      uint32_t slot = nextSlot[cell]++;
+      sortedInvTransforms[slot] = invTransforms[i];
+      sortedSpheres[slot] = spheres[i];
+      cubeIds[slot] = i;
+    });
   }
+  std::cout << "Grid: " << N << "^3 cells, " << entryCount << " entries for "
+            << spheres.size() << " cubes (" << 100.0 * (entryCount - spheres.size()) / spheres.size()
+            << "% duplicates)" << std::endl;
   benchmarkInfo_.cubePrepMs = msSince(start);
 
   // Upload once through staging buffers, so the shader reads from VRAM
@@ -207,7 +221,7 @@ void Engine::createBruteForceResources() {
       volkan_.storageImageView());
   benchmarkInfo_.pipelineMs = msSince(start);
 
-  benchmarkInfo_.renderer = BRUTE_FORCE_TILED ? "grid-compute-tiled" : "grid-compute";
+  benchmarkInfo_.renderer = BRUTE_FORCE_TILED ? "grid-dda-compute-tiled" : "grid-dda-compute";
   benchmarkInfo_.tileSize = BRUTE_FORCE_TILED ? TILE_SIZE : 0;
   benchmarkInfo_.linearInCubeCount = false;  // the grid skips most cubes
   benchmarkInfo_.bytesPerCube = sizeof(glm::mat4) + sizeof(glm::vec4) + sizeof(uint32_t);
@@ -346,7 +360,6 @@ BruteForcePushConstants Engine::makeBruteForcePushConstants() const {
   pushConstants.cameraPos = glm::vec4(camera_.pos, 1.0f);
   pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, GRID_RESOLUTION);  // tile offset starts at 0
   pushConstants.gridMin = gridMin_;
-  pushConstants.gridPad = glm::vec4(gridPad_, 0.0f, 0.0f, 0.0f);
   return pushConstants;
 }
 

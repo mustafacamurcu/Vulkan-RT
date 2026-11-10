@@ -36,11 +36,10 @@ class Engine {
 
   static constexpr RenderMode RENDER_MODE = RenderMode::BruteForceCompute;
 
-  static constexpr const char* BENCHMARK_LABEL = "03-grid-rejection";
+  static constexpr const char* BENCHMARK_LABEL = "04-grid-dda";
 
-  // Cubes are bucketed into a GRID_RESOLUTION^3 grid. A ray tests every cell
-  // (N^3) plus the cubes in the cells it crosses (~1.5M / N^2), so N = 16 keeps
-  // both around 5k: ~10k tests per ray instead of 1M.
+  // Cubes are stored in a GRID_RESOLUTION^3 grid that each ray walks with 3D-DDA.
+  // Kept at 16 (tuned for the previous step) so this step measures only the traversal.
   static constexpr uint32_t GRID_RESOLUTION = 16;
 
   static constexpr uint32_t NUM_CUBES = 1000000;
@@ -103,12 +102,12 @@ class Engine {
   vk::raii::AccelerationStructureKHR tlas_ = nullptr;
 
   // Brute force geometry
-  BufferData cubeBuffer_;    // inverse transform per cube (64 B), sorted by grid cell
-  BufferData sphereBuffer_;  // bounding sphere per cube (16 B), sorted by grid cell
-  BufferData cellBuffer_;    // where each cell's cubes start (GRID_RESOLUTION^3 + 1 entries)
-  BufferData cubeIdBuffer_;  // original index of each sorted cube (4 B), for its color
+  // One entry per (cube, overlapped cell) pair, sorted by cell
+  BufferData cubeBuffer_;    // inverse transform (64 B)
+  BufferData sphereBuffer_;  // bounding sphere (16 B)
+  BufferData cellBuffer_;    // where each cell's entries start (GRID_RESOLUTION^3 + 1)
+  BufferData cubeIdBuffer_;  // original cube index (4 B), for its color
   glm::vec4 gridMin_{0.0f};  // xyz = grid's min corner, w = cell size
-  float gridPad_ = 0.0f;     // largest sphere radius
 
   // Benchmarking: a pair of GPU timestamps per frame in flight
   vk::raii::QueryPool timestampQueryPool_ = nullptr;

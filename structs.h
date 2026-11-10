@@ -45,6 +45,5 @@ struct BruteForcePushConstants {
   glm::vec4 cameraPos;
   glm::uvec4 params;  // x = cube count, yz = pixel offset of this tile, w = grid resolution
   glm::vec4 gridMin;  // xyz = grid's min corner, w = cell size
-  glm::vec4 gridPad;  // x = largest sphere radius, yzw = unused
 };
 static_assert(sizeof(BruteForcePushConstants) <= 128, "push constants over the guaranteed limit");

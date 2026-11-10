@@ -39,3 +39,16 @@ Cubes are bucketed into a 16x16x16 grid by their center. Each ray first tests th
 | Grid Rejection | 1,000,000 | 0.34 s |
 
 A frame is now fast enough to render in a single dispatch instead of tiles: 0.28 s.
+
+## Grid Traversal (3D-DDA)
+Instead of testing all 4,096 cells, each ray walks only the cells it crosses, nearest first, and stops as soon as its closest hit lies inside the current cell. For this, every cube is listed in every cell its bounding box overlaps (39% duplicates), so no cell padding is needed. The rendered image is identical to the previous step.
+
+| Run | Cubes | GPU time per frame |
+| --- | --- | --- |
+| Brute Force | 1,000,000 | 64.6 s |
+| Staging Buffer | 1,000,000 | 39.7 s |
+| Bounding Sphere | 1,000,000 | 17.7 s |
+| Grid Rejection | 1,000,000 | 0.28 s |
+| Grid Traversal | 1,000,000 | 10.7 ms |
+
+1 million cubes now render at 93 FPS.
