@@ -49,7 +49,7 @@ Engine::~Engine() {
 }
 
 void Engine::createRayTracingResources() {
-  CubeScene scene = createCubeScene(NUM_CUBES, SCENE_CENTER, VIEWS[0].sceneHalfExtent);
+  CubeScene scene = createSceneFor(VIEWS[0]);
 
   // Unit cube centered at the origin
   std::vector<Vertex> vertices = {
@@ -108,15 +108,19 @@ void Engine::runBenchmarkSuite() {
             << "  image vs first config of the view" << std::endl;
 
   CubeScene scene;
-  float sceneHalfExtent = -1.0f;
+  const BenchmarkView* sceneView = nullptr;  // the view whose scene is currently built
   double sceneGenMs = 0.0;
 
   for (const BenchmarkView& view : VIEWS) {
-    if (view.sceneHalfExtent != sceneHalfExtent) {
+    // Views that share a scene (same box and clustering) reuse it
+    bool sameScene = sceneView && view.sceneHalfExtent == sceneView->sceneHalfExtent &&
+                     view.clusterCount == sceneView->clusterCount &&
+                     view.clusterSigma == sceneView->clusterSigma;
+    if (!sameScene) {
       auto start = Clock::now();
-      scene = createCubeScene(NUM_CUBES, SCENE_CENTER, view.sceneHalfExtent);
+      scene = createSceneFor(view);
       sceneGenMs = msSince(start);
-      sceneHalfExtent = view.sceneHalfExtent;
+      sceneView = &view;
     }
     setView(view);
     std::vector<uint8_t> referenceImage;
@@ -218,12 +222,17 @@ void Engine::runBenchmarkSuite() {
     }
   }
   if (best) {
-    CubeScene firstScene = createCubeScene(NUM_CUBES, SCENE_CENTER, VIEWS[0].sceneHalfExtent);
+    CubeScene firstScene = createSceneFor(VIEWS[0]);
     BenchmarkInfo unused;
     setView(VIEWS[0]);
     loadGrid(firstScene, METHODS[1], best->resolution, unused);
   }
   window_.setTitle("Vulkan - benchmark done (WASD to move)");
+}
+
+CubeScene Engine::createSceneFor(const BenchmarkView& view) {
+  return createCubeScene(NUM_CUBES, SCENE_CENTER, view.sceneHalfExtent, view.clusterCount,
+                         view.clusterSigma);
 }
 
 void Engine::setView(const BenchmarkView& view) {
@@ -332,7 +341,7 @@ void Engine::loadSingleConfig() {
     if (!method) throw std::runtime_error("unknown method " + startup_.method + " (try --help)");
   }
 
-  CubeScene scene = createCubeScene(NUM_CUBES, SCENE_CENTER, view->sceneHalfExtent);
+  CubeScene scene = createSceneFor(*view);
   setView(*view);
   BenchmarkInfo info;
   loadGrid(scene, *method, resolution, info);

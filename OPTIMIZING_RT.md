@@ -74,3 +74,18 @@ Grid traversal, median GPU time per frame at each grid size:
 | 128 | 1.98 ms | 1.50 ms | 4.60 ms |
 
 64 is within ~20% of the best in every view. Dense views get slower beyond it because smaller cells mean more duplicate entries and more steps per ray; the sparse view keeps improving up to 96 because its rays travel far. Grid rejection is best at 12-16 in every view (91-255 ms), 100-200x slower than traversal.
+
+## Uneven Scene
+A uniform grid is supposed to struggle with uneven scenes: a few cells end up holding thousands of cubes. A fourth view tests that: the same 1M cubes in 50 tight clusters of 20k, scattered through the large, mostly empty volume of the sparse scene.
+
+![Clustered scene](docs/clustered.png)
+
+Grid traversal, median GPU time per frame:
+
+| Grid size | dense-inside | dense-outside | sparse-inside | clustered |
+| --- | --- | --- | --- | --- |
+| 32 | 2.22 ms | 1.23 ms | 12.7 ms | 18.9 ms |
+| 64 | 1.15 ms | 0.83 ms | 4.91 ms | 4.17 ms |
+| 96 | 1.58 ms | 1.78 ms | 4.02 ms | 3.15 ms |
+
+The grid handles it well: clustered is faster than sparse. A ray entering a cluster hits something in its first cell or two and stops, and rays that miss the clusters cross cells that are almost all empty, which cost a step but no tests. The grid's real weak spot is space that rays cross without hitting anything, like the thinly filled sparse scene.

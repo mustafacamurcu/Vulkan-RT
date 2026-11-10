@@ -45,7 +45,7 @@ class Engine {
   static constexpr uint32_t WIDTH = 1920;
   static constexpr uint32_t HEIGHT = 1080;
   static constexpr RenderMode RENDER_MODE = RenderMode::GridCompute;
-  static constexpr const char* BENCHMARK_LABEL = "05-views-and-grid-sweep";
+  static constexpr const char* BENCHMARK_LABEL = "06-clustered-scene";
 
   static constexpr uint32_t NUM_CUBES = 1000000;
   inline static const glm::vec3 SCENE_CENTER{50.0f, 0.0f, 0.0f};
@@ -59,6 +59,8 @@ class Engine {
     glm::vec3 cameraPos;
     float yaw;    // degrees
     float pitch;  // degrees
+    uint32_t clusterCount = 0;  // 0 = cubes spread uniformly through the box
+    float clusterSigma = 0.0f;  // std dev of cube positions around a cluster center
   };
   inline static const BenchmarkView VIEWS[] = {
     // Camera inside the cloud: rays hit something within ~17 units
@@ -67,6 +69,9 @@ class Engine {
     {"dense-outside", 200.0f, {50.0f, 0.0f, -800.0f}, 90.0f, 0.0f},
     // Same 1M cubes in a 125x larger volume: about half the rays escape without a hit
     {"sparse-inside", 1000.0f, {50.0f, -70.0f, -80.0f}, 90.0f, 40.0f},
+    // Uneven: 50 tight clusters of 20k cubes in the same large, mostly empty box. Cluster
+    // cores are far denser than any cell of the uniform scenes (hard for a uniform grid).
+    {"clustered", 1000.0f, {50.0f, -70.0f, -80.0f}, 90.0f, 40.0f, 50, 25.0f},
   };
 
   // Each method and the grid resolutions to sweep. Rejection tests every cell
@@ -78,7 +83,8 @@ class Engine {
     std::vector<uint32_t> resolutions;
   };
   inline static const GridMethodConfig METHODS[] = {
-    {"grid-rejection", "shaders/grid_rejection.spv", GridLayout::ByCenter, {8, 12, 16, 24, 32}},
+    // Full 8-32 sweep done in step 05; only its best sizes are kept to save time
+    {"grid-rejection", "shaders/grid_rejection.spv", GridLayout::ByCenter, {12, 16}},
     {"grid-traversal", "shaders/grid_traversal.spv", GridLayout::ByOverlap,
      {8, 16, 24, 32, 48, 64, 96, 128}},
   };
@@ -97,6 +103,7 @@ class Engine {
   void createRayTracingResources();
 
   void runBenchmarkSuite();
+  static CubeScene createSceneFor(const BenchmarkView& view);
   void loadSingleConfig();
   void setView(const BenchmarkView& view);
   void loadGrid(const CubeScene& scene, const GridMethodConfig& method, uint32_t resolution,

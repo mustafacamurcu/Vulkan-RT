@@ -8,9 +8,23 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-CubeScene createCubeScene(uint32_t count, glm::vec3 center, float halfExtent) {
+CubeScene createCubeScene(uint32_t count, glm::vec3 center, float halfExtent,
+                          uint32_t clusterCount, float clusterSigma) {
   std::mt19937 rng(1337);
   std::uniform_real_distribution<float> positionDist(-halfExtent, halfExtent);
+  std::normal_distribution<float> clusterOffsetDist(0.0f, clusterSigma > 0.0f ? clusterSigma : 1.0f);
+
+  // Cluster centers, kept 3 sigma away from the box walls
+  std::vector<glm::vec3> clusterCenters;
+  if (clusterCount > 0) {
+    std::mt19937 clusterRng(4242);
+    float reach = std::max(halfExtent - 3.0f * clusterSigma, 0.0f);
+    std::uniform_real_distribution<float> clusterDist(-reach, reach);
+    for (uint32_t c = 0; c < clusterCount; c++) {
+      clusterCenters.push_back(center + glm::vec3(clusterDist(clusterRng), clusterDist(clusterRng),
+                                                  clusterDist(clusterRng)));
+    }
+  }
   std::uniform_real_distribution<float> angleDist(0.0f, glm::two_pi<float>());
   std::uniform_real_distribution<float> axisDist(-1.0f, 1.0f);
   std::uniform_real_distribution<float> scaleDist(0.5f, 3.0f);
@@ -26,7 +40,13 @@ CubeScene createCubeScene(uint32_t count, glm::vec3 center, float halfExtent) {
   scene.invTransforms.reserve(count);
   scene.spheres.reserve(count);
   for (uint32_t i = 0; i < count; i++) {
-    glm::vec3 position = center + glm::vec3(positionDist(rng), positionDist(rng), positionDist(rng));
+    glm::vec3 position;
+    if (clusterCount == 0) {
+      position = center + glm::vec3(positionDist(rng), positionDist(rng), positionDist(rng));
+    } else {
+      position = clusterCenters[i % clusterCount] +
+                 glm::vec3(clusterOffsetDist(rng), clusterOffsetDist(rng), clusterOffsetDist(rng));
+    }
 
     glm::vec3 axis(axisDist(rng), axisDist(rng), axisDist(rng));
     if (glm::length(axis) < 0.001f) {

@@ -11,7 +11,7 @@ void printUsage() {
   std::cout << "Usage: VKRenderer [--view NAME --method NAME --grid N]\n"
                "  No options: run the full benchmark suite, then render interactively.\n"
                "  With options: skip the suite and render one configuration (e.g. for profiling).\n"
-               "    --view    dense-inside | dense-outside | sparse-inside\n"
+               "    --view    dense-inside | dense-outside | sparse-inside | clustered\n"
                "    --method  grid-rejection | grid-traversal\n"
                "    --grid    grid resolution, e.g. 64\n";
 }
