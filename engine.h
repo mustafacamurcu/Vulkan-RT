@@ -11,6 +11,7 @@
 #include "grid.h"
 #include "grid_material.h"
 #include "rt_material.h"
+#include "triangle_scene.h"
 #include "structs.h"
 #include "volkan.h"
 #include "window.h"
@@ -98,7 +99,13 @@ class Engine {
   };
 
   // Viewer controls
-  static constexpr float MOVE_SPEED = 100.0f;      // units per second (x5 with Shift)
+  static constexpr float MOVE_SPEED = 100.0f;      // units per second for the cube scenes (x5 with Shift)
+
+  // Amazon Lumberyard Bistro (exterior), CC-BY 4.0, from NVIDIA ORCA. Not in git:
+  // download it into assets/bistro/ (see OPTIMIZING_RT.md).
+  static constexpr const char* BISTRO_PATH = "assets/bistro/BistroExterior.fbx";
+  static constexpr const char* TRIANGLE_SHADER = "shaders/triangle_traversal.spv";
+  static constexpr uint32_t BISTRO_GRID_RESOLUTION = 256;  // cells along the longest side
   static constexpr float TURN_SPEED = 60.0f;       // degrees per second (arrow keys)
 
   // Benchmark sweep: every shading mode at every grid resolution
@@ -130,6 +137,8 @@ class Engine {
 
   void runBenchmarkSuite();
   void loadViewer();
+  void loadBistroViewer(ShadingMode shading);
+  void setCameraLookAt(const glm::vec3& position, const glm::vec3& target);
   void setView(const CameraView& view);
   void loadGrid(const CubeScene& scene, uint32_t resolution, BenchmarkInfo& info);
   void setShading(ShadingMode mode);
@@ -171,6 +180,14 @@ class Engine {
   BufferData sphereBuffer_;  // bounding sphere (16 B)
   BufferData cellBuffer_;    // where each cell's entries start (resolution^3 + 1)
   BufferData cubeIdBuffer_;  // original cube index (4 B), for its color
+
+  // The triangle scene currently on the GPU (Bistro), when triangleMode_ is set
+  bool triangleMode_ = false;
+  BufferData triangleBuffer_;  // 3 vec4 per triangle
+  BufferData entryBuffer_;     // triangle indices, grouped by cell
+  BufferData materialBuffer_;  // color per material
+  glm::uvec3 gridDims_{0};     // cells per axis (triangle grid)
+  float moveSpeed_ = MOVE_SPEED;
   glm::vec4 gridMin_{0.0f};  // xyz = grid's min corner, w = cell size
   uint32_t gridResolution_ = 0;
   ShadingMode shading_ = DEFAULT_SHADING;

@@ -10,7 +10,7 @@ namespace {
 void printUsage() {
   std::cout << "Usage: VKRenderer [--scene NAME] [--grid N] [--shading MODE] | --benchmark\n"
                "  No options: open the viewer on the sparse scene.\n"
-               "    --scene      sparse | quadrants\n"
+               "    --scene      sparse | quadrants | bistro\n"
                "    --grid       grid resolution, e.g. 64 (default: the scene's best)\n"
                "    --shading    flat | diffuse | shadows\n"
                "  --benchmark: run the benchmark suite on the quadrant scene, then open the viewer.\n"

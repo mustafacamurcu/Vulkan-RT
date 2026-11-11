@@ -316,14 +316,13 @@ void Engine::discardPendingTimings() {
 
 void Engine::loadViewer() {
   const SceneConfig* sceneConfig = &SPARSE_SCENE;
+  bool bistro = startup_.scene == "bistro";
   if (startup_.scene == QUADRANT_SCENE.name) {
     sceneConfig = &QUADRANT_SCENE;
-  } else if (!startup_.scene.empty() && startup_.scene != SPARSE_SCENE.name) {
+  } else if (!bistro && !startup_.scene.empty() && startup_.scene != SPARSE_SCENE.name) {
     throw std::runtime_error("unknown scene " + startup_.scene + " (try --help)");
   }
 
-  uint32_t resolution = startup_.gridResolution != 0 ? startup_.gridResolution
-                                                     : sceneConfig->defaultGridResolution;
   ShadingMode shading = DEFAULT_SHADING;
   if (!startup_.shading.empty()) {
     bool found = false;
@@ -335,7 +334,13 @@ void Engine::loadViewer() {
     }
     if (!found) throw std::runtime_error("unknown shading " + startup_.shading + " (try --help)");
   }
+  if (bistro) {
+    loadBistroViewer(shading);
+    return;
+  }
 
+  uint32_t resolution = startup_.gridResolution != 0 ? startup_.gridResolution
+                                                     : sceneConfig->defaultGridResolution;
   CubeScene scene = createCubeScene(sceneConfig->regions);
   setView(sceneConfig->camera);
   BenchmarkInfo info;
@@ -345,6 +350,64 @@ void Engine::loadViewer() {
                    ", N=" + std::to_string(resolution) + "  (WASD move, QE up/down, arrows turn, Shift fast)");
   std::cout << "Rendering " << sceneConfig->name << ", " << shadingName(shading) << ", N="
             << resolution << " (" << info.gridEntries << " grid entries)" << std::endl;
+}
+
+void Engine::loadBistroViewer(ShadingMode shading) {
+  std::cout << "Loading " << BISTRO_PATH << "..." << std::endl;
+  auto start = Clock::now();
+  TriangleScene scene = loadFbxScene(BISTRO_PATH);
+  double loadMs = msSince(start);
+
+  uint32_t resolution = startup_.gridResolution != 0 ? startup_.gridResolution : BISTRO_GRID_RESOLUTION;
+  start = Clock::now();
+  TriangleGrid grid = buildTriangleGrid(scene, resolution);
+  double gridMs = msSince(start);
+
+  // Upload once through staging buffers, so the shader reads from VRAM
+  volkan_.device().waitIdle();
+  gridMaterial_.reset();
+  auto upload = [&](const auto& values) {
+    return volkan_.createDeviceLocalBuffer(values.data(), sizeof(values[0]) * values.size(),
+                                           vk::BufferUsageFlagBits::eStorageBuffer);
+  };
+  triangleBuffer_ = upload(scene.triangles);
+  entryBuffer_ = upload(grid.entries);
+  cellBuffer_ = upload(grid.cellStart);
+  materialBuffer_ = upload(scene.materialColors);
+  gridMaterial_ = std::make_unique<GridMaterial>(volkan_, TRIANGLE_SHADER, triangleBuffer_,
+                                                 entryBuffer_, cellBuffer_, materialBuffer_,
+                                                 volkan_.storageImageView());
+  triangleMode_ = true;
+  gridMin_ = grid.gridMin;
+  gridDims_ = grid.dims;
+  gridResolution_ = resolution;
+  setShading(shading);
+
+  // Start outside one corner of the scene, above it, looking at its center.
+  // Movement speed scales with the scene (Bistro is in meters).
+  glm::vec3 size = scene.boundsMax - scene.boundsMin;
+  glm::vec3 center = (scene.boundsMin + scene.boundsMax) * 0.5f;
+  float span = std::max({size.x, size.y, size.z});
+  setCameraLookAt(center + glm::vec3(-0.45f * size.x, -0.25f * span, -0.45f * size.z), center);
+  moveSpeed_ = span * 0.05f;
+
+  window_.setTitle(std::string("Vulkan - bistro, ") + shadingName(shading) + ", N=" +
+                   std::to_string(resolution) + "  (WASD move, QE up/down, arrows turn, Shift fast)");
+  std::cout << "Bistro: " << scene.triangleCount() << " triangles, "
+            << scene.materialColors.size() << " materials, size " << size.x << " x " << size.y
+            << " x " << size.z << " m\n"
+            << "  FBX load " << loadMs << " ms, grid " << grid.dims.x << "x" << grid.dims.y << "x"
+            << grid.dims.z << " (" << grid.entries.size() << " entries) built in " << gridMs << " ms"
+            << std::endl;
+  std::cout << "Rendering bistro, " << shadingName(shading) << ", N=" << resolution << std::endl;
+}
+
+void Engine::setCameraLookAt(const glm::vec3& position, const glm::vec3& target) {
+  glm::vec3 front = glm::normalize(target - position);
+  camera_.pos = position;
+  pitch_ = glm::degrees(std::asin(front.y));
+  yaw_ = glm::degrees(std::atan2(front.z, front.x));
+  updateCameraFront();
 }
 
 void Engine::run() {
@@ -436,7 +499,13 @@ GridPushConstants Engine::makeGridPushConstants() const {
   GridPushConstants pushConstants;
   pushConstants.invViewProj = glm::inverse(viewProj);
   pushConstants.cameraPos = glm::vec4(camera_.pos, 1.0f);
-  pushConstants.params = glm::uvec4(0, static_cast<uint32_t>(shading_), 0, gridResolution_);
+  if (triangleMode_) {
+    // Triangle grid: cells per axis in x, z, w (the scene isn't a cube)
+    pushConstants.params = glm::uvec4(gridDims_.x, static_cast<uint32_t>(shading_), gridDims_.y,
+                                      gridDims_.z);
+  } else {
+    pushConstants.params = glm::uvec4(0, static_cast<uint32_t>(shading_), 0, gridResolution_);
+  }
   pushConstants.gridMin = gridMin_;
   pushConstants.gridPad = glm::vec4(0.0f);
   return pushConstants;
@@ -493,7 +562,7 @@ void Engine::processInput() {
   pitch_ = std::clamp(pitch_, -89.0f, 89.0f);
   updateCameraFront();
 
-  float speed = MOVE_SPEED * dt * (pressed(GLFW_KEY_LEFT_SHIFT) ? 5.0f : 1.0f);
+  float speed = moveSpeed_ * dt * (pressed(GLFW_KEY_LEFT_SHIFT) ? 5.0f : 1.0f);
   glm::vec3 right = glm::normalize(glm::cross(camera_.front, camera_.up));
   if (pressed(GLFW_KEY_W)) camera_.pos += speed * camera_.front;
   if (pressed(GLFW_KEY_S)) camera_.pos -= speed * camera_.front;

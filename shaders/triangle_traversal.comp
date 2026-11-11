@@ -1,0 +1,210 @@
+#version 460
+
+// Grid ray tracer for triangle meshes. Same 3D-DDA traversal as the cube shader
+// (grid_traversal.comp), but each cell lists triangle indices and the hit test
+// is the Moller-Trumbore ray-triangle intersection.
+//
+// Shading (params.y): 0 = flat material color, 1 = diffuse lighting from a
+// directional light, 2 = diffuse + shadows (a second ray toward the light).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// 3 vec4 per triangle: xyz = vertex, w of the first one = material index
+layout(std430, binding = 0) readonly buffer TriangleBuffer {
+    vec4 triangleVertices[];
+};
+
+layout(binding = 1, rgba8) uniform writeonly image2D image;
+
+// Triangle indices, grouped by cell
+layout(std430, binding = 2) readonly buffer EntryBuffer {
+    uint entries[];
+};
+
+// The triangles of cell c are entries[cellStart[c]] .. entries[cellStart[c + 1] - 1]
+layout(std430, binding = 3) readonly buffer CellBuffer {
+    uint cellStart[];
+};
+
+// rgb = color shown for each material
+layout(std430, binding = 4) readonly buffer MaterialBuffer {
+    vec4 materialColors[];
+};
+
+layout(push_constant) uniform constants
+{
+    mat4 invViewProj;
+    vec4 cameraPos;
+    uvec4 params;   // x = cells along x, y = shading mode, z = cells along y, w = cells along z
+    vec4 gridMin;   // xyz = grid's min corner, w = cell size
+    vec4 gridPad;   // unused
+} PC;
+
+const uint SHADING_FLAT = 0u;
+const uint SHADING_DIFFUSE = 1u;
+const uint SHADING_SHADOWS = 2u;
+
+// Direction TOWARD the light (a distant sun). -y is up in this project.
+const vec3 LIGHT_DIR = normalize(vec3(0.5, -1.0, 0.3));
+const float AMBIENT = 0.15;      // light that reaches surfaces facing away or in shadow
+const float SHADOW_BIAS = 1e-3;  // start shadow rays slightly off the surface (meters)
+const float T_MIN = 1e-5;        // ignore hits right at the ray origin
+
+// Background for rays that hit nothing: a dark gradient, brighter toward "up" (-y)
+vec3 skyColor(vec3 direction)
+{
+    return mix(vec3(0.02, 0.02, 0.03), vec3(0.15, 0.2, 0.3), clamp(0.5 - 0.5 * direction.y, 0.0, 1.0));
+}
+
+// Result of tracing one ray
+float closestT;
+int closestTriangle;
+
+// Moller-Trumbore ray-triangle test for every triangle listed in one cell.
+// anyHit: stop at the first hit (shadow rays only need "is anything in the way?").
+void testCell(uint cell, vec3 origin, vec3 direction, bool anyHit)
+{
+    uint end = cellStart[cell + 1];
+    for (uint i = cellStart[cell]; i < end; i++) {
+        uint triangle = entries[i];
+        vec3 v0 = triangleVertices[triangle * 3].xyz;
+        vec3 edge1 = triangleVertices[triangle * 3 + 1].xyz - v0;
+        vec3 edge2 = triangleVertices[triangle * 3 + 2].xyz - v0;
+
+        vec3 p = cross(direction, edge2);
+        float det = dot(edge1, p);
+        if (abs(det) < 1e-12) {
+            continue;  // ray parallel to the triangle
+        }
+        float invDet = 1.0 / det;
+        vec3 s = origin - v0;
+        float u = dot(s, p) * invDet;  // barycentric coordinates of the hit point
+        if (u < 0.0 || u > 1.0) {
+            continue;
+        }
+        vec3 q = cross(s, edge1);
+        float v = dot(direction, q) * invDet;
+        if (v < 0.0 || u + v > 1.0) {
+            continue;
+        }
+        float t = dot(edge2, q) * invDet;
+        if (t > T_MIN && t < closestT) {
+            closestT = t;
+            closestTriangle = int(triangle);
+            if (anyHit) {
+                return;
+            }
+        }
+    }
+}
+
+// Walks the grid along the ray (3D-DDA), nearest cell first. Sets closestT and
+// closestTriangle (-1 = no hit). anyHit stops at the first hit instead of the closest.
+void traceRay(vec3 origin, vec3 direction, bool anyHit)
+{
+    closestT = 1e30;
+    closestTriangle = -1;
+
+    vec3 invDirection = 1.0 / direction;
+    ivec3 dims = ivec3(PC.params.x, PC.params.z, PC.params.w);
+    float cellSize = PC.gridMin.w;
+    vec3 gridMin = PC.gridMin.xyz;
+    vec3 gridMax = gridMin + cellSize * vec3(dims);
+
+    // Where does the ray enter and leave the whole grid? (it may start outside)
+    vec3 g1 = (gridMin - origin) * invDirection;
+    vec3 g2 = (gridMax - origin) * invDirection;
+    vec3 gNear = min(g1, g2);
+    vec3 gFar = max(g1, g2);
+    float gridEnter = max(max(max(gNear.x, gNear.y), gNear.z), 0.0);
+    float gridExit = min(min(gFar.x, gFar.y), gFar.z);
+    if (gridEnter > gridExit) {
+        return;
+    }
+
+    // ---- 3D-DDA setup ----
+    vec3 startPos = origin + direction * gridEnter;
+    ivec3 cell = clamp(ivec3(floor((startPos - gridMin) / cellSize)), ivec3(0), dims - 1);
+    ivec3 stepDir = ivec3(sign(direction));
+    vec3 tDelta = abs(cellSize * invDirection);
+    vec3 nextWall = gridMin + (vec3(cell) + vec3(greaterThan(stepDir, ivec3(0)))) * cellSize;
+    vec3 tMax = (nextWall - origin) * invDirection;
+    tMax = mix(tMax, vec3(1e30), equal(stepDir, ivec3(0)));
+
+    // ---- Walk the cells along the ray, nearest first ----
+    while (true) {
+        uint cellIndex = uint(cell.x + dims.x * (cell.y + dims.y * cell.z));
+        testCell(cellIndex, origin, direction, anyHit);
+
+        // Early exit: a hit inside this cell beats anything in later cells
+        float cellExit = min(min(tMax.x, tMax.y), tMax.z);
+        if (closestT <= cellExit || (anyHit && closestTriangle >= 0)) {
+            return;
+        }
+
+        if (tMax.x < tMax.y && tMax.x < tMax.z) {
+            cell.x += stepDir.x;
+            tMax.x += tDelta.x;
+        } else if (tMax.y < tMax.z) {
+            cell.y += stepDir.y;
+            tMax.y += tDelta.y;
+        } else {
+            cell.z += stepDir.z;
+            tMax.z += tDelta.z;
+        }
+
+        if (any(lessThan(cell, ivec3(0))) || any(greaterThanEqual(cell, dims))) {
+            return;
+        }
+    }
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(image);
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+
+    // Unproject the pixel onto the far plane to get the ray direction
+    vec2 d = (vec2(pixel) + vec2(0.5)) / vec2(size) * 2.0 - 1.0;
+    vec4 farPoint = PC.invViewProj * vec4(d, 1.0, 1.0);
+    vec3 origin = PC.cameraPos.xyz;
+    vec3 direction = normalize(farPoint.xyz / farPoint.w - origin);
+
+    // Camera ray: closest hit
+    traceRay(origin, direction, false);
+    if (closestTriangle < 0) {
+        imageStore(image, pixel, vec4(skyColor(direction), 1.0));
+        return;
+    }
+
+    uint material = uint(triangleVertices[closestTriangle * 3].w);
+    vec3 albedo = materialColors[material].rgb;
+    uint shading = PC.params.y;
+    if (shading == SHADING_FLAT) {
+        imageStore(image, pixel, vec4(albedo, 1.0));
+        return;
+    }
+
+    // Triangle normal, flipped to face the ray (surfaces are treated as two-sided)
+    vec3 v0 = triangleVertices[closestTriangle * 3].xyz;
+    vec3 normal = normalize(cross(triangleVertices[closestTriangle * 3 + 1].xyz - v0,
+                                  triangleVertices[closestTriangle * 3 + 2].xyz - v0));
+    if (dot(normal, direction) > 0.0) {
+        normal = -normal;
+    }
+    float lambert = max(dot(normal, LIGHT_DIR), 0.0);
+
+    // Shadow ray: anything between the hit point and the light? (only needed if lit)
+    vec3 hitPoint = origin + direction * closestT;
+    if (shading == SHADING_SHADOWS && lambert > 0.0) {
+        traceRay(hitPoint + normal * SHADOW_BIAS, LIGHT_DIR, true);
+        if (closestTriangle >= 0) {
+            lambert = 0.0;
+        }
+    }
+
+    vec3 color = albedo * (AMBIENT + (1.0 - AMBIENT) * lambert);
+    imageStore(image, pixel, vec4(color, 1.0));
+}

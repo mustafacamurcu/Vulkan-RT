@@ -8,3 +8,6 @@ out/
 
 # Written by the Nsight overlay into the working directory
 imgui.ini
+
+# Third-party scene data (large; downloaded separately, see OPTIMIZING_RT.md)
+assets/

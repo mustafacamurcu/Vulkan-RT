@@ -32,6 +32,8 @@ set(SOURCES
     rt_material.cpp
     grid_material.cpp
     grid.cpp
+    triangle_scene.cpp
+    third_party/ufbx/ufbx.c
     benchmark.cpp
     vk_utils.cpp
     window.cpp
@@ -41,7 +43,11 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/ufbx
 )
+
+# ufbx (FBX loader, MIT / public domain): third-party code, so don't show its warnings
+set_source_files_properties(third_party/ufbx/ufbx.c PROPERTIES COMPILE_OPTIONS "/w")
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     # Library configuration macros change what headers compile to, so they must
@@ -78,6 +84,7 @@ if(GLSLC)
         COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/miss.rmiss -o ${CMAKE_SOURCE_DIR}/shaders/miss.spv
         COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/closesthit.rchit -o ${CMAKE_SOURCE_DIR}/shaders/closesthit.spv
         COMMAND ${GLSLC} -g --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.comp -o ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.spv
+        COMMAND ${GLSLC} -g --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/triangle_traversal.comp -o ${CMAKE_SOURCE_DIR}/shaders/triangle_traversal.spv
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/shaders
         COMMENT "Compiling shaders..."
     )

@@ -111,3 +111,14 @@ The cubes are now lit by a directional light. Shadows need a second ray per pixe
 Diffuse lighting costs about the same as flat colors. Shadows add roughly 50-80%, not 100%: only lit surfaces trace a shadow ray, and a shadow ray can stop at its first hit. At these frame times the measurements are noisy (up to ±1 ms).
 
 Fixing the colors along the way: the image was copied to the screen with a raw byte copy, which swapped red and blue and skipped the sRGB conversion. It is now blitted, which converts both.
+
+## A Real Scene: Bistro
+Random cubes are a convenient test, but real scenes are made of triangles with wildly different sizes. The ray tracer now also loads the Amazon Lumberyard Bistro exterior: 2.83 million triangles, 133 materials, 174 x 51 x 184 m. The same grid traversal works; each cell lists the triangles overlapping it, and the cube test is replaced by a ray-triangle test (Moller-Trumbore). Colors are per material for now (no textures yet).
+
+![Bistro exterior with shadows](docs/bistro.png)
+
+The grid has 242 x 71 x 256 cells and 10 million entries for 2.8 million triangles: large triangles like walls and streets cross many cells. That is the uniform grid's weak spot showing up in a real scene.
+
+Run it with `VKRenderer --scene bistro`. The scene is not in the repository: download it from [NVIDIA ORCA](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) and put `BistroExterior.fbx` in `assets/bistro/`. FBX loading uses [ufbx](https://github.com/ufbx/ufbx).
+
+*Amazon Lumberyard Bistro, Open Research Content Archive (ORCA), Amazon Lumberyard, 2017. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*
