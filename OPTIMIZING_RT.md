@@ -89,3 +89,25 @@ Grid traversal, median GPU time per frame:
 | 96 | 1.58 ms | 1.78 ms | 4.02 ms | 3.15 ms |
 
 The grid handles it well: clustered is faster than sparse. A ray entering a cluster hits something in its first cell or two and stops, and rays that miss the clusters cross cells that are almost all empty, which cost a step but no tests. The grid's real weak spot is space that rays cross without hitting anything, like the thinly filled sparse scene.
+
+## One Scene, With Shading
+From here on there is one benchmark scene: a box split into four quadrants, each a different challenge (1M cubes in total). A camera high above sees all four:
+
+- **dense** (front left): 300k cubes, rays hit something almost immediately.
+- **sparse** (front right): 10k cubes, rays cross many cells and often escape.
+- **clustered** (back left): 400k cubes in 20 tight clusters.
+- **mixed sizes** (back right): 290k cubes from 0.2 to 8 units, mostly tiny with a few big ones that span many grid cells.
+
+The cubes are now lit by a directional light. Shadows need a second ray per pixel: from the hit point toward the light, stopping at the first thing in the way.
+
+![Quadrant scene with shadows](docs/quadrants_shadows.png)
+
+| Grid size | flat | diffuse | shadows |
+| --- | --- | --- | --- |
+| 48 | 2.22 ms | 1.99 ms | 2.40 ms |
+| 64 | 1.55 ms | 2.02 ms | 3.44 ms |
+| 96 | 1.58 ms | 1.61 ms | 2.79 ms |
+
+Diffuse lighting costs about the same as flat colors. Shadows add roughly 50-80%, not 100%: only lit surfaces trace a shadow ray, and a shadow ray can stop at its first hit. At these frame times the measurements are noisy (up to ±1 ms).
+
+Fixing the colors along the way: the image was copied to the screen with a raw byte copy, which swapped red and blue and skipped the sRGB conversion. It is now blitted, which converts both.

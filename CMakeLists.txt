@@ -77,7 +77,6 @@ if(GLSLC)
         COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/raygen.rgen -o ${CMAKE_SOURCE_DIR}/shaders/raygen.spv
         COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/miss.rmiss -o ${CMAKE_SOURCE_DIR}/shaders/miss.spv
         COMMAND ${GLSLC} -g --target-spv=spv1.5 --target-env=vulkan1.2 ${CMAKE_SOURCE_DIR}/shaders/closesthit.rchit -o ${CMAKE_SOURCE_DIR}/shaders/closesthit.spv
-        COMMAND ${GLSLC} -g --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/grid_rejection.comp -o ${CMAKE_SOURCE_DIR}/shaders/grid_rejection.spv
         COMMAND ${GLSLC} -g --target-spv=spv1.5 ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.comp -o ${CMAKE_SOURCE_DIR}/shaders/grid_traversal.spv
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/shaders
         COMMENT "Compiling shaders..."

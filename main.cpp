@@ -8,12 +8,13 @@
 namespace {
 
 void printUsage() {
-  std::cout << "Usage: VKRenderer [--view NAME --method NAME --grid N]\n"
-               "  No options: run the full benchmark suite, then render interactively.\n"
-               "  With options: skip the suite and render one configuration (e.g. for profiling).\n"
-               "    --view    dense-inside | dense-outside | sparse-inside | clustered\n"
-               "    --method  grid-rejection | grid-traversal\n"
-               "    --grid    grid resolution, e.g. 64\n";
+  std::cout << "Usage: VKRenderer [--scene NAME] [--grid N] [--shading MODE] | --benchmark\n"
+               "  No options: open the viewer on the sparse scene.\n"
+               "    --scene      sparse | quadrants\n"
+               "    --grid       grid resolution, e.g. 64 (default: the scene's best)\n"
+               "    --shading    flat | diffuse | shadows\n"
+               "  --benchmark: run the benchmark suite on the quadrant scene, then open the viewer.\n"
+               "  Controls: WASD move, Q/E down/up, arrow keys turn, hold Shift to move faster.\n";
 }
 
 StartupConfig parseArgs(int argc, char** argv) {
@@ -24,14 +25,18 @@ StartupConfig parseArgs(int argc, char** argv) {
       printUsage();
       std::exit(EXIT_SUCCESS);
     }
+    if (arg == "--benchmark") {
+      config.benchmark = true;
+      continue;
+    }
     if (i + 1 >= argc) {
       throw std::runtime_error("missing value after " + arg);
     }
     std::string value = argv[++i];
-    if (arg == "--view") {
-      config.view = value;
-    } else if (arg == "--method") {
-      config.method = value;
+    if (arg == "--scene") {
+      config.scene = value;
+    } else if (arg == "--shading") {
+      config.shading = value;
     } else if (arg == "--grid") {
       config.gridResolution = static_cast<uint32_t>(std::stoul(value));
     } else {

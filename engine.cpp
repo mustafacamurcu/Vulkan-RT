@@ -34,7 +34,7 @@ Engine::Engine(const StartupConfig& startup) : startup_(startup), window_(WIDTH,
   glfwSetFramebufferSizeCallback(window_.handle(), framebufferResizeCallback);
 
   volkan_.init(window_.handle());
-  setView(VIEWS[0]);
+  setView(SPARSE_SCENE.camera);
   timestampQueryPool_ = volkan_.createTimestampQueryPool(2 * MAX_FRAMES_IN_FLIGHT);
 
   if (RENDER_MODE == RenderMode::HardwareRayTracing) {
@@ -49,7 +49,7 @@ Engine::~Engine() {
 }
 
 void Engine::createRayTracingResources() {
-  CubeScene scene = createSceneFor(VIEWS[0]);
+  CubeScene scene = createCubeScene(SPARSE_SCENE.regions);
 
   // Unit cube centered at the origin
   std::vector<Vertex> vertices = {
@@ -87,170 +87,165 @@ void Engine::createRayTracingResources() {
 }
 
 // ---------------------------------------------------------------------------
-// Benchmark suite: every view x method x grid resolution
+// Benchmark suite: every shading mode at every grid resolution
 // ---------------------------------------------------------------------------
+
+namespace {
+
+const char* shadingName(ShadingMode mode) {
+  switch (mode) {
+    case ShadingMode::Flat: return "flat";
+    case ShadingMode::Diffuse: return "diffuse";
+    case ShadingMode::Shadows: return "shadows";
+  }
+  return "?";
+}
+
+}  // namespace
 
 void Engine::runBenchmarkSuite() {
   struct Result {
-    const char* view;
-    const char* method;
+    ShadingMode shading;
     uint32_t resolution;
     FrameStats stats;
   };
   std::vector<Result> results;
   ImageDiff largestDiff;
 
-  std::cout << "Benchmark suite: " << std::size(VIEWS) << " views, " << NUM_CUBES << " cubes, "
-            << volkan_.extent().width << "x" << volkan_.extent().height << "\n"
-            << std::left << std::setw(15) << "view" << std::setw(16) << "method" << std::right
-            << std::setw(5) << "N" << std::setw(12) << "entries" << std::setw(11) << "median ms"
-            << std::setw(10) << "stddev" << std::setw(8) << "frames"
-            << "  image vs first config of the view" << std::endl;
+  auto start = Clock::now();
+  const SceneConfig& sceneConfig = QUADRANT_SCENE;
+  CubeScene scene = createCubeScene(sceneConfig.regions);
+  double sceneGenMs = msSince(start);
+  setView(sceneConfig.camera);
 
-  CubeScene scene;
-  const BenchmarkView* sceneView = nullptr;  // the view whose scene is currently built
-  double sceneGenMs = 0.0;
+  std::cout << "Benchmark suite: " << scene.spheres.size() << " cubes in " << sceneConfig.regions.size()
+            << " regions, " << volkan_.extent().width << "x" << volkan_.extent().height << "\n"
+            << std::left << std::setw(10) << "shading" << std::right << std::setw(5) << "N"
+            << std::setw(12) << "entries" << std::setw(11) << "median ms" << std::setw(10)
+            << "stddev" << std::setw(8) << "frames" << "  image vs first N of the same shading"
+            << std::endl;
 
-  for (const BenchmarkView& view : VIEWS) {
-    // Views that share a scene (same box and clustering) reuse it
-    bool sameScene = sceneView && view.sceneHalfExtent == sceneView->sceneHalfExtent &&
-                     view.clusterCount == sceneView->clusterCount &&
-                     view.clusterSigma == sceneView->clusterSigma;
-    if (!sameScene) {
-      auto start = Clock::now();
-      scene = createSceneFor(view);
-      sceneGenMs = msSince(start);
-      sceneView = &view;
+  // One reference image per shading mode (each mode renders a different picture)
+  std::vector<std::vector<uint8_t>> referenceImages(std::size(SHADING_MODES));
+
+  for (uint32_t resolution : GRID_RESOLUTIONS) {
+    uint64_t entries = countGridEntries(scene, GridLayout::ByOverlap, resolution);
+    if (entries * BYTES_PER_ENTRY > MAX_GRID_BYTES) {
+      std::cout << std::setw(15) << resolution << std::setw(12) << entries
+                << "  skipped: grid would need " << entries * BYTES_PER_ENTRY / (1 << 20)
+                << " MiB" << std::endl;
+      continue;
     }
-    setView(view);
-    std::vector<uint8_t> referenceImage;
 
-    for (const GridMethodConfig& method : METHODS) {
-      for (uint32_t resolution : method.resolutions) {
-        uint64_t entries = countGridEntries(scene, method.layout, resolution);
-        if (entries * BYTES_PER_ENTRY > MAX_GRID_BYTES) {
-          std::cout << std::left << std::setw(15) << view.name << std::setw(16) << method.name
-                    << std::right << std::setw(5) << resolution << std::setw(12) << entries
-                    << "  skipped: grid would need " << entries * BYTES_PER_ENTRY / (1 << 20)
-                    << " MiB" << std::endl;
-          continue;
-        }
-        window_.setTitle(std::string("Vulkan - ") + view.name + ", " + method.name + ", N=" +
-                         std::to_string(resolution));
+    BenchmarkInfo info;
+    info.label = BENCHMARK_LABEL;
+    info.view = sceneConfig.camera.name;
+    info.buildConfig = BUILD_CONFIG;
+    info.deviceName = volkan_.getDeviceName();
+    info.width = volkan_.extent().width;
+    info.height = volkan_.extent().height;
+    info.cubeCount = static_cast<uint32_t>(scene.spheres.size());
+    info.bytesPerEntry = BYTES_PER_ENTRY;
+    info.sceneGenMs = sceneGenMs;
+    loadGrid(scene, resolution, info);
 
-        BenchmarkInfo info;
-        info.label = BENCHMARK_LABEL;
-        info.renderer = method.name;
-        info.view = view.name;
-        info.buildConfig = BUILD_CONFIG;
-        info.deviceName = volkan_.getDeviceName();
-        info.width = volkan_.extent().width;
-        info.height = volkan_.extent().height;
-        info.cubeCount = NUM_CUBES;
-        info.bytesPerEntry = BYTES_PER_ENTRY;
-        info.sceneGenMs = sceneGenMs;
-        loadGrid(scene, method, resolution, info);
+    for (size_t m = 0; m < std::size(SHADING_MODES); m++) {
+      const ShadingConfig& shading = SHADING_MODES[m];
+      setShading(shading.mode);
+      info.renderer = std::string("grid-traversal/") + shading.name;
+      window_.setTitle(std::string("Vulkan - ") + shading.name + ", N=" + std::to_string(resolution));
 
-        std::vector<FrameTiming> timings;
-        if (!measureFrames(timings)) {
-          std::cout << "Window closed, benchmark aborted." << std::endl;
-          return;
-        }
+      std::vector<FrameTiming> timings;
+      if (!measureFrames(timings)) {
+        std::cout << "Window closed, benchmark aborted." << std::endl;
+        return;
+      }
 
-        // Every configuration of a view should render the same image. Count the
-        // pixels that differ from the view's first configuration, and how many of
-        // them gained or lost a hit (black <-> cube), which is what a bug would do.
-        std::vector<uint8_t> image = volkan_.readStorageImage();
-        info.imageHash = hashBytes(image);
-        if (referenceImage.empty()) {
-          referenceImage = image;
-        }
-        ImageDiff diff = compareImages(referenceImage, image);
-        if (diff.differentPixels > largestDiff.differentPixels) {
-          largestDiff = diff;
-        }
+      // Every grid resolution should render the same image for a given shading
+      // mode. Count the pixels that differ from that mode's first resolution.
+      std::vector<uint8_t> image = volkan_.readStorageImage();
+      info.imageHash = hashBytes(image);
+      if (referenceImages[m].empty()) {
+        referenceImages[m] = image;
+      }
+      ImageDiff diff = compareImages(referenceImages[m], image);
+      if (diff.differentPixels > largestDiff.differentPixels) {
+        largestDiff = diff;
+      }
 
-        FrameStats stats = computeStats(timings);
-        appendBenchmarkCsv(BENCHMARK_CSV_PATH, info, stats);
-        results.push_back({view.name, method.name, resolution, stats});
+      FrameStats stats = computeStats(timings);
+      appendBenchmarkCsv(BENCHMARK_CSV_PATH, info, stats);
+      results.push_back({shading.mode, resolution, stats});
 
-        std::cout << std::left << std::setw(15) << view.name << std::setw(16) << method.name
-                  << std::right << std::setw(5) << resolution << std::setw(12) << entries
-                  << std::fixed << std::setprecision(2) << std::setw(11) << stats.medianGpuMs
-                  << std::setw(10) << stats.stddevGpuMs << std::setw(8) << stats.frames << "  ";
-        if (diff.differentPixels == 0) {
-          std::cout << "identical" << std::endl;
-        } else {
-          std::cout << diff.differentPixels << " px differ (" << diff.hitChangedPixels
-                    << " gained/lost a hit)" << std::endl;
-        }
+      std::cout << std::left << std::setw(10) << shading.name << std::right << std::setw(5)
+                << resolution << std::setw(12) << entries << std::fixed << std::setprecision(2)
+                << std::setw(11) << stats.medianGpuMs << std::setw(10) << stats.stddevGpuMs
+                << std::setw(8) << stats.frames << "  ";
+      if (diff.differentPixels == 0) {
+        std::cout << "identical" << std::endl;
+      } else {
+        std::cout << diff.differentPixels << " px differ (" << diff.hitChangedPixels
+                  << " gained/lost a hit)" << std::endl;
       }
     }
   }
 
-  // Best resolution per view and method
+  // Fastest resolution per shading mode
   std::cout << "\nFastest grid resolution (median GPU ms per frame):\n";
-  for (const BenchmarkView& view : VIEWS) {
-    for (const GridMethodConfig& method : METHODS) {
-      const Result* best = nullptr;
-      for (const Result& result : results) {
-        if (result.view == view.name && result.method == method.name &&
-            (!best || result.stats.medianGpuMs < best->stats.medianGpuMs)) {
-          best = &result;
-        }
+  uint32_t bestShadowResolution = sceneConfig.defaultGridResolution;
+  for (const ShadingConfig& shading : SHADING_MODES) {
+    const Result* best = nullptr;
+    for (const Result& result : results) {
+      if (result.shading == shading.mode &&
+          (!best || result.stats.medianGpuMs < best->stats.medianGpuMs)) {
+        best = &result;
       }
-      if (best) {
-        std::cout << "  " << std::left << std::setw(15) << view.name << std::setw(16) << method.name
-                  << std::right << "N=" << std::setw(3) << best->resolution << std::fixed
-                  << std::setprecision(2) << std::setw(10) << best->stats.medianGpuMs << " ms\n";
+    }
+    if (best) {
+      std::cout << "  " << std::left << std::setw(10) << shading.name << std::right << "N="
+                << std::setw(3) << best->resolution << std::fixed << std::setprecision(2)
+                << std::setw(10) << best->stats.medianGpuMs << " ms\n";
+      if (shading.mode == DEFAULT_SHADING) {
+        bestShadowResolution = best->resolution;
       }
     }
   }
   uint64_t pixelCount = uint64_t(volkan_.extent().width) * volkan_.extent().height;
-  std::cout << "Largest image difference within a view: " << largestDiff.differentPixels << " of "
-            << pixelCount << " px (" << std::setprecision(3)
+  std::cout << "Largest image difference across resolutions: " << largestDiff.differentPixels
+            << " of " << pixelCount << " px (" << std::setprecision(3)
             << 100.0 * largestDiff.differentPixels / pixelCount << "%), "
             << largestDiff.hitChangedPixels << " gained/lost a hit\n"
             << "Results appended to " << BENCHMARK_CSV_PATH << std::endl;
 
-  // Leave the fastest traversal grid for the first view loaded, for interactive use
-  const Result* best = nullptr;
-  for (const Result& result : results) {
-    if (result.view == VIEWS[0].name && result.method == METHODS[1].name &&
-        (!best || result.stats.medianGpuMs < best->stats.medianGpuMs)) {
-      best = &result;
-    }
-  }
-  if (best) {
-    CubeScene firstScene = createSceneFor(VIEWS[0]);
+  // Leave the default shading at its fastest resolution, for interactive use
+  if (gridResolution_ != bestShadowResolution) {
     BenchmarkInfo unused;
-    setView(VIEWS[0]);
-    loadGrid(firstScene, METHODS[1], best->resolution, unused);
+    loadGrid(scene, bestShadowResolution, unused);
   }
-  window_.setTitle("Vulkan - benchmark done (WASD to move)");
+  setShading(DEFAULT_SHADING);
+  window_.setTitle("Vulkan - benchmark done (WASD move, QE up/down, arrows turn, Shift fast)");
 }
 
-CubeScene Engine::createSceneFor(const BenchmarkView& view) {
-  return createCubeScene(NUM_CUBES, SCENE_CENTER, view.sceneHalfExtent, view.clusterCount,
-                         view.clusterSigma);
-}
-
-void Engine::setView(const BenchmarkView& view) {
-  camera_.pos = view.cameraPos;
+void Engine::setView(const CameraView& view) {
+  camera_.pos = view.position;
   yaw_ = view.yaw;
   pitch_ = view.pitch;
   updateCameraFront();
 }
 
-void Engine::loadGrid(const CubeScene& scene, const GridMethodConfig& method, uint32_t resolution,
-                      BenchmarkInfo& info) {
+void Engine::setShading(ShadingMode mode) {
+  shading_ = mode;
+  gridLabel_ = "grid-traversal N=" + std::to_string(gridResolution_) + " " + shadingName(mode);
+}
+
+void Engine::loadGrid(const CubeScene& scene, uint32_t resolution, BenchmarkInfo& info) {
   // The old grid may still be in use by frames in flight
   volkan_.device().waitIdle();
   discardPendingTimings();
   gridMaterial_.reset();
 
   auto start = Clock::now();
-  GridData grid = buildGrid(scene, method.layout, resolution);
+  GridData grid = buildGrid(scene, GridLayout::ByOverlap, resolution);
   info.gridBuildMs = msSince(start);
   info.gridResolution = resolution;
   info.gridEntries = grid.cubeIds.size();
@@ -268,15 +263,14 @@ void Engine::loadGrid(const CubeScene& scene, const GridMethodConfig& method, ui
   info.uploadMs = msSince(start);
 
   start = Clock::now();
-  gridMaterial_ = std::make_unique<GridMaterial>(volkan_, method.shader, cubeBuffer_, sphereBuffer_,
+  gridMaterial_ = std::make_unique<GridMaterial>(volkan_, GRID_SHADER, cubeBuffer_, sphereBuffer_,
                                                  cellBuffer_, cubeIdBuffer_,
                                                  volkan_.storageImageView());
   info.pipelineMs = msSince(start);
 
   gridMin_ = grid.gridMin;
-  gridPad_ = grid.pad;
   gridResolution_ = resolution;
-  gridLabel_ = std::string(method.name) + " N=" + std::to_string(resolution);
+  setShading(shading_);  // refreshes the perf marker name
 }
 
 bool Engine::measureFrames(std::vector<FrameTiming>& timings) {
@@ -320,48 +314,49 @@ void Engine::discardPendingTimings() {
 // Frame loop
 // ---------------------------------------------------------------------------
 
-void Engine::loadSingleConfig() {
-  // Defaults for anything not given on the command line
-  const BenchmarkView* view = &VIEWS[0];
-  const GridMethodConfig* method = &METHODS[1];
-  uint32_t resolution = startup_.gridResolution != 0 ? startup_.gridResolution : 64;
-
-  if (!startup_.view.empty()) {
-    view = nullptr;
-    for (const BenchmarkView& candidate : VIEWS) {
-      if (startup_.view == candidate.name) view = &candidate;
-    }
-    if (!view) throw std::runtime_error("unknown view " + startup_.view + " (try --help)");
-  }
-  if (!startup_.method.empty()) {
-    method = nullptr;
-    for (const GridMethodConfig& candidate : METHODS) {
-      if (startup_.method == candidate.name) method = &candidate;
-    }
-    if (!method) throw std::runtime_error("unknown method " + startup_.method + " (try --help)");
+void Engine::loadViewer() {
+  const SceneConfig* sceneConfig = &SPARSE_SCENE;
+  if (startup_.scene == QUADRANT_SCENE.name) {
+    sceneConfig = &QUADRANT_SCENE;
+  } else if (!startup_.scene.empty() && startup_.scene != SPARSE_SCENE.name) {
+    throw std::runtime_error("unknown scene " + startup_.scene + " (try --help)");
   }
 
-  CubeScene scene = createSceneFor(*view);
-  setView(*view);
+  uint32_t resolution = startup_.gridResolution != 0 ? startup_.gridResolution
+                                                     : sceneConfig->defaultGridResolution;
+  ShadingMode shading = DEFAULT_SHADING;
+  if (!startup_.shading.empty()) {
+    bool found = false;
+    for (const ShadingConfig& candidate : SHADING_MODES) {
+      if (startup_.shading == candidate.name) {
+        shading = candidate.mode;
+        found = true;
+      }
+    }
+    if (!found) throw std::runtime_error("unknown shading " + startup_.shading + " (try --help)");
+  }
+
+  CubeScene scene = createCubeScene(sceneConfig->regions);
+  setView(sceneConfig->camera);
   BenchmarkInfo info;
-  loadGrid(scene, *method, resolution, info);
-  std::string title = std::string("Vulkan - ") + view->name + ", " + method->name +
-                      ", N=" + std::to_string(resolution);
-  window_.setTitle(title);
-  std::cout << "Rendering " << view->name << ", " << method->name << ", N=" << resolution
-            << " (" << info.gridEntries << " grid entries)" << std::endl;
+  loadGrid(scene, resolution, info);
+  setShading(shading);
+  window_.setTitle(std::string("Vulkan - ") + sceneConfig->name + ", " + shadingName(shading) +
+                   ", N=" + std::to_string(resolution) + "  (WASD move, QE up/down, arrows turn, Shift fast)");
+  std::cout << "Rendering " << sceneConfig->name << ", " << shadingName(shading) << ", N="
+            << resolution << " (" << info.gridEntries << " grid entries)" << std::endl;
 }
 
 void Engine::run() {
   if (RENDER_MODE == RenderMode::GridCompute) {
-    if (startup_.isSingleConfig()) {
-      loadSingleConfig();
-    } else {
+    if (startup_.benchmark) {
       runBenchmarkSuite();
+    } else {
+      loadViewer();
     }
   }
-  benchmarkDone_ = true;
   lastSubmitTime_ = Clock::now();
+  lastInputTime_ = Clock::now();
 
   while (!window_.shouldClose()) {
     glfwPollEvents();
@@ -441,9 +436,9 @@ GridPushConstants Engine::makeGridPushConstants() const {
   GridPushConstants pushConstants;
   pushConstants.invViewProj = glm::inverse(viewProj);
   pushConstants.cameraPos = glm::vec4(camera_.pos, 1.0f);
-  pushConstants.params = glm::uvec4(NUM_CUBES, 0, 0, gridResolution_);
+  pushConstants.params = glm::uvec4(0, static_cast<uint32_t>(shading_), 0, gridResolution_);
   pushConstants.gridMin = gridMin_;
-  pushConstants.gridPad = glm::vec4(gridPad_, 0.0f, 0.0f, 0.0f);
+  pushConstants.gridPad = glm::vec4(0.0f);
   return pushConstants;
 }
 
@@ -480,18 +475,32 @@ void Engine::updateCameraFront() {
 }
 
 void Engine::processInput() {
+  // Move by time, not by frame, so speed doesn't depend on the frame rate
+  auto now = Clock::now();
+  float dt = static_cast<float>(msBetween(lastInputTime_, now) / 1000.0);
+  lastInputTime_ = now;
+  dt = std::min(dt, 0.1f);  // don't jump after a stall (e.g. a slow frame)
+
   GLFWwindow* window = window_.handle();
+  auto pressed = [&](int key) { return glfwGetKey(window, key) == GLFW_PRESS; };
+
+  // Arrow keys turn the camera
+  float turn = TURN_SPEED * dt;
+  if (pressed(GLFW_KEY_LEFT)) yaw_ += turn;
+  if (pressed(GLFW_KEY_RIGHT)) yaw_ -= turn;
+  if (pressed(GLFW_KEY_UP)) pitch_ -= turn;    // -y is up, so looking up lowers the pitch
+  if (pressed(GLFW_KEY_DOWN)) pitch_ += turn;
+  pitch_ = std::clamp(pitch_, -89.0f, 89.0f);
   updateCameraFront();
-  float cameraSpeed = 0.05f;
+
+  float speed = MOVE_SPEED * dt * (pressed(GLFW_KEY_LEFT_SHIFT) ? 5.0f : 1.0f);
   glm::vec3 right = glm::normalize(glm::cross(camera_.front, camera_.up));
-  if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-    camera_.pos += cameraSpeed * camera_.front;
-  if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-    camera_.pos -= cameraSpeed * camera_.front;
-  if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-    camera_.pos -= right * cameraSpeed;
-  if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-    camera_.pos += right * cameraSpeed;
+  if (pressed(GLFW_KEY_W)) camera_.pos += speed * camera_.front;
+  if (pressed(GLFW_KEY_S)) camera_.pos -= speed * camera_.front;
+  if (pressed(GLFW_KEY_A)) camera_.pos -= speed * right;
+  if (pressed(GLFW_KEY_D)) camera_.pos += speed * right;
+  if (pressed(GLFW_KEY_E)) camera_.pos += speed * camera_.up;
+  if (pressed(GLFW_KEY_Q)) camera_.pos -= speed * camera_.up;
 }
 
 void Engine::handleFramebufferResized() {

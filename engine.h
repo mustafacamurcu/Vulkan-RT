@@ -15,13 +15,19 @@
 #include "volkan.h"
 #include "window.h"
 
-// Command-line choice: empty = run the benchmark suite, otherwise render one configuration
-struct StartupConfig {
-  std::string view;
-  std::string method;
-  uint32_t gridResolution = 0;
+// How each hit is colored (must match SHADING_* in grid_traversal.comp)
+enum class ShadingMode : uint32_t {
+  Flat = 0,     // the cube's color, no lighting
+  Diffuse = 1,  // Lambert lighting from a directional light (no extra rays)
+  Shadows = 2,  // diffuse + a shadow ray toward the light from every lit hit
+};
 
-  bool isSingleConfig() const { return !view.empty() || !method.empty() || gridResolution != 0; }
+// Command-line options. No options = open the viewer on the sparse scene.
+struct StartupConfig {
+  bool benchmark = false;       // --benchmark: run the benchmark suite instead of the viewer
+  std::string scene;            // --scene sparse|quadrants (viewer only)
+  uint32_t gridResolution = 0;  // --grid N (viewer only; 0 = the scene's default)
+  std::string shading;          // --shading flat|diffuse|shadows (viewer only)
 };
 
 enum class RenderMode {
@@ -45,49 +51,69 @@ class Engine {
   static constexpr uint32_t WIDTH = 1920;
   static constexpr uint32_t HEIGHT = 1080;
   static constexpr RenderMode RENDER_MODE = RenderMode::GridCompute;
-  static constexpr const char* BENCHMARK_LABEL = "06-clustered-scene";
+  static constexpr const char* BENCHMARK_LABEL = "07-quadrants-shading";
 
-  static constexpr uint32_t NUM_CUBES = 1000000;
-  inline static const glm::vec3 SCENE_CENTER{50.0f, 0.0f, 0.0f};
-
-  // Benchmark viewpoints. The cost of grid traversal depends on how far rays
-  // travel before hitting something, so it is measured in an easy, a medium
-  // and a hard case.
-  struct BenchmarkView {
+  struct CameraView {
     const char* name;
-    float sceneHalfExtent;  // cubes fill a box of this half size around SCENE_CENTER
-    glm::vec3 cameraPos;
+    glm::vec3 position;
     float yaw;    // degrees
-    float pitch;  // degrees
-    uint32_t clusterCount = 0;  // 0 = cubes spread uniformly through the box
-    float clusterSigma = 0.0f;  // std dev of cube positions around a cluster center
-  };
-  inline static const BenchmarkView VIEWS[] = {
-    // Camera inside the cloud: rays hit something within ~17 units
-    {"dense-inside", 200.0f, {50.0f, -70.0f, -80.0f}, 90.0f, 40.0f},
-    // Camera outside, the whole cloud in view: rays cross empty space, then hit its surface
-    {"dense-outside", 200.0f, {50.0f, 0.0f, -800.0f}, 90.0f, 0.0f},
-    // Same 1M cubes in a 125x larger volume: about half the rays escape without a hit
-    {"sparse-inside", 1000.0f, {50.0f, -70.0f, -80.0f}, 90.0f, 40.0f},
-    // Uneven: 50 tight clusters of 20k cubes in the same large, mostly empty box. Cluster
-    // cores are far denser than any cell of the uniform scenes (hard for a uniform grid).
-    {"clustered", 1000.0f, {50.0f, -70.0f, -80.0f}, 90.0f, 40.0f, 50, 25.0f},
+    float pitch;  // degrees (positive looks down: -y is up)
   };
 
-  // Each method and the grid resolutions to sweep. Rejection tests every cell
-  // for every ray, so large grids get slow quickly; traversal can go much finer.
-  struct GridMethodConfig {
+  // A scene: where the cubes are, where the camera starts, and its best grid size
+  struct SceneConfig {
     const char* name;
-    const char* shader;
-    GridLayout layout;
-    std::vector<uint32_t> resolutions;
+    std::vector<CubeRegion> regions;
+    CameraView camera;
+    uint32_t defaultGridResolution;
   };
-  inline static const GridMethodConfig METHODS[] = {
-    // Full 8-32 sweep done in step 05; only its best sizes are kept to save time
-    {"grid-rejection", "shaders/grid_rejection.spv", GridLayout::ByCenter, {12, 16}},
-    {"grid-traversal", "shaders/grid_traversal.spv", GridLayout::ByOverlap,
-     {8, 16, 24, 32, 48, 64, 96, 128}},
+
+  // Viewer default: 1M cubes thinly spread through a 2000-unit box, seen from
+  // just outside it. Most rays pass between cubes, so you see deep into the cloud.
+  inline static const SceneConfig SPARSE_SCENE = {
+    "sparse",
+    {{"sparse", {-1000.0f, -1000.0f, -1000.0f}, {1000.0f, 1000.0f, 1000.0f}, 1000000}},
+    {"sparse-afar", {0.0f, -800.0f, -4000.0f}, 90.0f, 11.3f},
+    96,
   };
+
+  // Benchmark scene: one box split into four quadrants (on x and z), each a
+  // different challenge for the ray tracer. 1M cubes in total. The camera is high
+  // above, looking down at ~55 degrees, so the tops of all four are in view.
+  inline static const SceneConfig QUADRANT_SCENE = {
+    "quadrants",
+    {
+      // Like the old dense scene: rays hit something within ~17 units
+      {"dense", {-250.0f, -125.0f, -250.0f}, {0.0f, 125.0f, 0.0f}, 300000},
+      // Mostly empty: rays cross many cells and often escape without a hit
+      {"sparse", {0.0f, -125.0f, -250.0f}, {250.0f, 125.0f, 0.0f}, 10000},
+      // 20 tight clusters of 20k cubes: very uneven density
+      {"clustered", {-250.0f, -125.0f, 0.0f}, {0.0f, 125.0f, 250.0f}, 400000, 20, 12.0f},
+      // Sizes from 0.2 to 8 (log-uniform): mostly tiny cubes, a few big ones that
+      // span many grid cells and cast large shadows
+      {"mixed-sizes", {0.0f, -125.0f, 0.0f}, {250.0f, 125.0f, 250.0f}, 290000, 0, 0.0f, 0.2f, 8.0f, true},
+    },
+    {"quadrants", {0.0f, -650.0f, -450.0f}, 90.0f, 53.5f},
+    64,
+  };
+
+  // Viewer controls
+  static constexpr float MOVE_SPEED = 100.0f;      // units per second (x5 with Shift)
+  static constexpr float TURN_SPEED = 60.0f;       // degrees per second (arrow keys)
+
+  // Benchmark sweep: every shading mode at every grid resolution
+  struct ShadingConfig {
+    const char* name;
+    ShadingMode mode;
+  };
+  inline static const ShadingConfig SHADING_MODES[] = {
+    {"flat", ShadingMode::Flat},
+    {"diffuse", ShadingMode::Diffuse},
+    {"shadows", ShadingMode::Shadows},
+  };
+  inline static const std::vector<uint32_t> GRID_RESOLUTIONS = {32, 48, 64, 96, 128};
+  static constexpr const char* GRID_SHADER = "shaders/grid_traversal.spv";
+  static constexpr ShadingMode DEFAULT_SHADING = ShadingMode::Shadows;
 
   // Per configuration: warm-up frames, then timed frames until either limit is reached
   static constexpr uint32_t WARMUP_FRAMES = 2;
@@ -103,11 +129,10 @@ class Engine {
   void createRayTracingResources();
 
   void runBenchmarkSuite();
-  static CubeScene createSceneFor(const BenchmarkView& view);
-  void loadSingleConfig();
-  void setView(const BenchmarkView& view);
-  void loadGrid(const CubeScene& scene, const GridMethodConfig& method, uint32_t resolution,
-                BenchmarkInfo& info);
+  void loadViewer();
+  void setView(const CameraView& view);
+  void loadGrid(const CubeScene& scene, uint32_t resolution, BenchmarkInfo& info);
+  void setShading(ShadingMode mode);
   bool measureFrames(std::vector<FrameTiming>& timings);  // false if the window was closed
   void discardPendingTimings();
 
@@ -147,9 +172,9 @@ class Engine {
   BufferData cellBuffer_;    // where each cell's entries start (resolution^3 + 1)
   BufferData cubeIdBuffer_;  // original cube index (4 B), for its color
   glm::vec4 gridMin_{0.0f};  // xyz = grid's min corner, w = cell size
-  float gridPad_ = 0.0f;     // how much to grow each cell when testing it (rejection only)
   uint32_t gridResolution_ = 0;
-  std::string gridLabel_;    // perf marker name for the dispatch, e.g. "grid-traversal N=64"
+  ShadingMode shading_ = DEFAULT_SHADING;
+  std::string gridLabel_;    // perf marker name for the dispatch, e.g. "grid-traversal N=64 shadows"
 
   // Benchmarking: a pair of GPU timestamps per frame in flight
   vk::raii::QueryPool timestampQueryPool_ = nullptr;
@@ -159,7 +184,7 @@ class Engine {
   bool collecting_ = false;
   uint32_t framesSeen_ = 0;
   std::vector<FrameTiming> collected_;
-  bool benchmarkDone_ = false;
+  std::chrono::steady_clock::time_point lastInputTime_;
 
   std::unique_ptr<RayTracingMaterial> rtMaterial_;
   std::unique_ptr<GridMaterial> gridMaterial_;

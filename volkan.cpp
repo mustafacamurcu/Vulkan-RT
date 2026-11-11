@@ -452,17 +452,20 @@ void Volkan::copyStorageImageToSwapchain() {
     {}, {}, {}, swapchainBarrier
   );
 
-  // Copy storage image to swapchain
-  vk::ImageCopy copyRegion;
-  copyRegion.setSrcSubresource({vk::ImageAspectFlagBits::eColor, 0, 0, 1});
-  copyRegion.setSrcOffset({0, 0, 0});
-  copyRegion.setDstSubresource({vk::ImageAspectFlagBits::eColor, 0, 0, 1});
-  copyRegion.setDstOffset({0, 0, 0});
-  copyRegion.setExtent({swapChainExtent_.width, swapChainExtent_.height, 1});
+  // Blit (not copy) the storage image to the swapchain image. A copy moves raw
+  // bytes, but the two formats differ: RGBA8 linear vs BGRA8 sRGB. A blit converts:
+  // it swaps red/blue and gamma-encodes our linear colors for the sRGB display.
+  vk::Offset3D fullSize{static_cast<int32_t>(swapChainExtent_.width),
+                        static_cast<int32_t>(swapChainExtent_.height), 1};
+  vk::ImageBlit blitRegion;
+  blitRegion.setSrcSubresource({vk::ImageAspectFlagBits::eColor, 0, 0, 1});
+  blitRegion.setSrcOffsets({vk::Offset3D{0, 0, 0}, fullSize});
+  blitRegion.setDstSubresource({vk::ImageAspectFlagBits::eColor, 0, 0, 1});
+  blitRegion.setDstOffsets({vk::Offset3D{0, 0, 0}, fullSize});
 
-  commandBuffer.copyImage(*storageImage_, vk::ImageLayout::eTransferSrcOptimal,
+  commandBuffer.blitImage(*storageImage_, vk::ImageLayout::eTransferSrcOptimal,
                           swapChainImages_[fd.imageIndex], vk::ImageLayout::eTransferDstOptimal,
-                          copyRegion);
+                          blitRegion, vk::Filter::eNearest);
 
   // Transition swapchain image to present
   vk::ImageMemoryBarrier presentBarrier;

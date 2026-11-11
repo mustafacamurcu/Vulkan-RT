@@ -13,13 +13,21 @@ struct CubeScene {
   std::vector<glm::vec4> spheres;        // bounding sphere: xyz = center, w = radius
 };
 
-// `count` cubes with random rotation and size (0.5-3) in a box of `halfExtent`
-// around `center`. With clusterCount == 0 they are spread uniformly; otherwise
-// they are split evenly into clusters placed at random in the box, each cube
-// normally distributed (std dev clusterSigma) around its cluster's center.
-// Fixed seeds, so the scene is the same every run.
-CubeScene createCubeScene(uint32_t count, glm::vec3 center, float halfExtent,
-                          uint32_t clusterCount = 0, float clusterSigma = 0.0f);
+// A box of space filled with randomly placed, rotated and sized cubes
+struct CubeRegion {
+  const char* name;
+  glm::vec3 min;
+  glm::vec3 max;
+  uint32_t count;
+  uint32_t clusterCount = 0;   // 0 = spread uniformly; otherwise split evenly into clusters
+  float clusterSigma = 0.0f;   // std dev of cube positions around a cluster center
+  float minScale = 0.5f;       // cube edge length range
+  float maxScale = 3.0f;
+  bool logScale = false;       // log-uniform sizes: mostly small cubes, a few very large
+};
+
+// All regions' cubes in one scene. Fixed seeds, so the scene is the same every run.
+CubeScene createCubeScene(const std::vector<CubeRegion>& regions);
 
 enum class GridLayout {
   ByCenter,   // each cube in the one cell holding its center; cells padded on test

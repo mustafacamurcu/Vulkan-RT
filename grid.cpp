@@ -8,27 +8,7 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-CubeScene createCubeScene(uint32_t count, glm::vec3 center, float halfExtent,
-                          uint32_t clusterCount, float clusterSigma) {
-  std::mt19937 rng(1337);
-  std::uniform_real_distribution<float> positionDist(-halfExtent, halfExtent);
-  std::normal_distribution<float> clusterOffsetDist(0.0f, clusterSigma > 0.0f ? clusterSigma : 1.0f);
-
-  // Cluster centers, kept 3 sigma away from the box walls
-  std::vector<glm::vec3> clusterCenters;
-  if (clusterCount > 0) {
-    std::mt19937 clusterRng(4242);
-    float reach = std::max(halfExtent - 3.0f * clusterSigma, 0.0f);
-    std::uniform_real_distribution<float> clusterDist(-reach, reach);
-    for (uint32_t c = 0; c < clusterCount; c++) {
-      clusterCenters.push_back(center + glm::vec3(clusterDist(clusterRng), clusterDist(clusterRng),
-                                                  clusterDist(clusterRng)));
-    }
-  }
-  std::uniform_real_distribution<float> angleDist(0.0f, glm::two_pi<float>());
-  std::uniform_real_distribution<float> axisDist(-1.0f, 1.0f);
-  std::uniform_real_distribution<float> scaleDist(0.5f, 3.0f);
-
+CubeScene createCubeScene(const std::vector<CubeRegion>& regions) {
   // The unit cube's corners are sqrt(3)/2 from its center, scaled by the cube's
   // (uniform) scale. They sit exactly on that sphere, so a 0.1% larger radius is
   // a safety margin against float rounding rejecting a ray that grazes a corner.
@@ -36,32 +16,58 @@ CubeScene createCubeScene(uint32_t count, glm::vec3 center, float halfExtent,
   const float cornerDistance = 0.5f * std::sqrt(3.0f) * RADIUS_PADDING;
 
   CubeScene scene;
-  scene.transforms.reserve(count);
-  scene.invTransforms.reserve(count);
-  scene.spheres.reserve(count);
-  for (uint32_t i = 0; i < count; i++) {
-    glm::vec3 position;
-    if (clusterCount == 0) {
-      position = center + glm::vec3(positionDist(rng), positionDist(rng), positionDist(rng));
-    } else {
-      position = clusterCenters[i % clusterCount] +
-                 glm::vec3(clusterOffsetDist(rng), clusterOffsetDist(rng), clusterOffsetDist(rng));
+  for (size_t r = 0; r < regions.size(); r++) {
+    const CubeRegion& region = regions[r];
+    // Each region has its own fixed seed, so changing one region leaves the others alone
+    std::mt19937 rng(1337u + static_cast<uint32_t>(r));
+    std::uniform_real_distribution<float> xDist(region.min.x, region.max.x);
+    std::uniform_real_distribution<float> yDist(region.min.y, region.max.y);
+    std::uniform_real_distribution<float> zDist(region.min.z, region.max.z);
+    std::normal_distribution<float> clusterOffsetDist(
+        0.0f, region.clusterSigma > 0.0f ? region.clusterSigma : 1.0f);
+    std::uniform_real_distribution<float> angleDist(0.0f, glm::two_pi<float>());
+    std::uniform_real_distribution<float> axisDist(-1.0f, 1.0f);
+    // Log-uniform: every factor-of-2 range of sizes gets the same number of cubes,
+    // so most cubes are small and a few are very large
+    std::uniform_real_distribution<float> scaleDist(
+        region.logScale ? std::log(region.minScale) : region.minScale,
+        region.logScale ? std::log(region.maxScale) : region.maxScale);
+
+    // Cluster centers, kept 3 sigma inside the region's walls
+    std::vector<glm::vec3> clusterCenters;
+    for (uint32_t c = 0; c < region.clusterCount; c++) {
+      glm::vec3 margin(3.0f * region.clusterSigma);
+      glm::vec3 lo = glm::min(region.min + margin, (region.min + region.max) * 0.5f);
+      glm::vec3 hi = glm::max(region.max - margin, (region.min + region.max) * 0.5f);
+      clusterCenters.push_back(glm::vec3(std::uniform_real_distribution<float>(lo.x, hi.x)(rng),
+                                         std::uniform_real_distribution<float>(lo.y, hi.y)(rng),
+                                         std::uniform_real_distribution<float>(lo.z, hi.z)(rng)));
     }
 
-    glm::vec3 axis(axisDist(rng), axisDist(rng), axisDist(rng));
-    if (glm::length(axis) < 0.001f) {
-      axis = glm::vec3(0.0f, 1.0f, 0.0f);
+    for (uint32_t i = 0; i < region.count; i++) {
+      glm::vec3 position;
+      if (region.clusterCount == 0) {
+        position = glm::vec3(xDist(rng), yDist(rng), zDist(rng));
+      } else {
+        position = clusterCenters[i % region.clusterCount] +
+                   glm::vec3(clusterOffsetDist(rng), clusterOffsetDist(rng), clusterOffsetDist(rng));
+      }
+
+      glm::vec3 axis(axisDist(rng), axisDist(rng), axisDist(rng));
+      if (glm::length(axis) < 0.001f) {
+        axis = glm::vec3(0.0f, 1.0f, 0.0f);
+      }
+      float angle = angleDist(rng);
+      float scale = region.logScale ? std::exp(scaleDist(rng)) : scaleDist(rng);
+
+      glm::mat4 transform = glm::translate(glm::mat4(1.0f), position);
+      transform = glm::rotate(transform, angle, glm::normalize(axis));
+      transform = glm::scale(transform, glm::vec3(scale));
+
+      scene.transforms.push_back(transform);
+      scene.invTransforms.push_back(glm::inverse(transform));
+      scene.spheres.push_back(glm::vec4(position, scale * cornerDistance));
     }
-    float angle = angleDist(rng);
-    float scale = scaleDist(rng);
-
-    glm::mat4 transform = glm::translate(glm::mat4(1.0f), position);
-    transform = glm::rotate(transform, angle, glm::normalize(axis));
-    transform = glm::scale(transform, glm::vec3(scale));
-
-    scene.transforms.push_back(transform);
-    scene.invTransforms.push_back(glm::inverse(transform));
-    scene.spheres.push_back(glm::vec4(position, scale * cornerDistance));
   }
   return scene;
 }

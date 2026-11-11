@@ -43,8 +43,8 @@ struct RayTracingPushConstants {
 struct GridPushConstants {
   glm::mat4 invViewProj;
   glm::vec4 cameraPos;
-  glm::uvec4 params;  // x = cube count, yz = pixel offset of this tile, w = grid resolution
+  glm::uvec4 params;  // x = unused, y = shading mode, z = unused, w = grid resolution
   glm::vec4 gridMin;  // xyz = grid's min corner, w = cell size
-  glm::vec4 gridPad;  // x = how much to grow each cell when testing it (grid rejection only)
+  glm::vec4 gridPad;  // unused (was the cell padding of the removed grid rejection method)
 };
 static_assert(sizeof(GridPushConstants) <= 128, "push constants over the guaranteed limit");
